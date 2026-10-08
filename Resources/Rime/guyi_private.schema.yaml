@@ -1,0 +1,14 @@
+__include: guyi_pinyin.schema:/
+schema:
+  schema_id: guyi_private
+  name: GuYi拼音（不学习）
+  version: "1.0"
+translator:
+  dictionary: luna_pinyin
+  enable_user_dict: false
+  enable_sentence: true
+  enable_completion: true
+__patch:
+  schema/schema_id: guyi_private
+  schema/name: GuYi拼音（不学习）
+  translator/enable_user_dict: false

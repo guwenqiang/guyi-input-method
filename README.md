@@ -1,0 +1,80 @@
+# GuYi Input Method
+
+![GuYi logo](assets/guyi-logo.png)
+
+[简体中文](README.md) · [English](docs/README.en.md) · [Bahasa Indonesia](docs/README.id.md)
+
+**在输入的位置完成跨语言表达。** GuYi 是 Apple Silicon/macOS 26 的原生输入法：本地 Rime 拼音负责中文输入，你配置的大模型服务提供多语言译文，译文在光标附近可选、可复制、可朗读。选中别处的文字也能翻译，无须在聊天应用和翻译网页间反复复制粘贴。
+
+适合经常用中文、英文或印尼语沟通的学生、跨境团队、客服与技术人员。日常保留短输入节奏，需要组织完整消息时可切换整句模式。点击书本按钮还可按需查看 AI 辅助的词义、音标、语法与例句。
+
+> 开发预览：保留系统输入法作后备。部分应用的选区、Caps Lock 输入源切换和云服务响应速度尚未完成全面验收。截图与长截图暂不在本版开放。当前本机开发签名并非 Apple Developer ID 签名或公证，不应将编译/安装成功视为跨应用可用。
+
+## 为什么用 GuYi
+
+| 任务 | 常见流程 | GuYi |
+| --- | --- | --- |
+| 回复另一种语言的消息 | 输入 → 翻译网页 → 复制译文 → 粘贴 | 在原输入框中查看并选择译文 |
+| 理解收到的文本 | 复制 → 切应用 → 翻译 | 选中后在文字附近查看译文 |
+| 学习一段表达 | 再查词典、发音和语法 | 在译文旁按需打开学习卡并朗读 |
+
+翻译质量取决于你配置的模型、提示词与原文；AI 译文和音标需要复核，不宣称必然优于专用翻译服务。
+
+## 功能
+
+- 本地 Rime 拼音、横排候选、个人组词学习、常见英文词候选与表情联想。数字、小数点、千分位、网址和常用标点按上下文输入。
+- 输入时的多语言预览和明确上屏；短输入与整句模式可切换。14 个目标语言独立开关，中文、英语、印尼语三种界面。
+- 精确计算：例如 `5/5=` 显示 `1`，确认后插入；不确定或溢出时不猜测结果。
+- 选中翻译支持目标语言多选、复制译文、朗读原文/译文及“读懂 · 学会用”。不翻译纯数字、链接和明显的密钥/标识符。
+- 对不提供系统选区的应用，可选精确兼容读取：明确划词或全选后短暂复制、读取并恢复剪贴板。默认开启，但可关闭；剪贴板历史工具仍可能记录这次短暂变化。自动复制原文是另一个独立开关，默认关闭。
+- 十个常用内容槽可保存文字、图片或文件；本地内存和 SQLite 译文缓存有容量/保留期限制。
+
+## 安装
+
+1. 从 GitHub **Releases** 下载最新稳定版 DMG，打开后双击 `GuYi-Input-Method.pkg`，按 macOS Installer 提示完成安装。不要把旧 DMG 与新版本混用。
+2. 从“应用程序”打开 GuYi 输入法设置，按下文配置模型服务并保存。
+3. 在“系统设置 → 键盘 → 文字输入 → 编辑”中添加 GuYi，然后在目标应用的实际输入框里选它。保留系统 ABC 或其他输入法作后备。
+4. 若 macOS 因本机开发签名阻止安装或首次启动，请勿关闭系统安全机制；等待正式 Developer ID 签名/公证版本。当前 DMG 是开发预览，不保证所有机器可直接安装。
+
+升级使用同一 DMG → PKG 安装流程，正常保留本机设置、词库与缓存，不要求重启。安装/登记成功不等于微信、Office 等应用已验收。
+
+## 配置大模型
+
+在设置的**服务**页选择接口协议，填写基础 API 地址、模型 ID 和该服务的 API Key，先用“测试连接与翻译”验证，再保存。
+
+| 接口协议 | 适用服务 | 地址示例 |
+| --- | --- | --- |
+| Responses | OpenAI 或实现兼容 Responses API 的服务 | `https://api.openai.com/v1` |
+| Chat Completions | 实现 OpenAI 兼容 Chat Completions API 的服务 | 服务商提供的 `/v1` 基础地址 |
+| Claude / Anthropic Messages | 实现 Messages API 的服务 | 服务商提供的基础地址 |
+
+OpenAI 协议**不限于 OpenAI 公司**：任何实现相应接口、认证与 GuYi 所需结构化输出的服务均可配置；“兼容”不保证所有模型都能调用。豆包/火山方舟云 API 可按其开放的 Responses 或 Chat Completions 接口填写基础地址 `https://ark.cn-beijing.volces.com/api/v3`、已开通的模型或 `ep-` 接入点 ID，以及单独的方舟 API Key。GuYi 不读取豆包桌面版登录。不同服务的最近一次配置会分别保留，同一服务的新配置覆盖旧配置。ChatGPT 订阅不等于 API Key 或 API 额度。
+
+**隐私：**密钥存于当前用户的本机权限受限文件，仍是明文；译文缓存也未加密。输入翻译、选中翻译与学习请求会把相应文字发送到你配置的服务。请使用可信的 HTTPS 服务，不要在公开 issue 中贴密钥、工作聊天或私人截图。
+
+## 常用操作
+
+| 操作 | 默认方式 |
+| --- | --- |
+| 中文候选 | 输入拼音，空格或数字 `1–5` 选词；`=`/`-` 在拼音候选中翻页 |
+| 原文语言 | `Option+0` 循环中文、英文、印尼语 |
+| 整句模式 | `Control+Option+Return` 开/关 |
+| 插入译文 | `Option+1/2/3` 对应中文/英文/印尼语；其他语言可在快捷键页设置 |
+| 常用内容 | `Control+Option+数字` 复制；加 `Shift` 请求粘贴 |
+| 选中翻译 | 拖选、双击；支持的编辑框中可用 `Command+A` |
+
+所有功能快捷键均可在设置中修改或禁用，若与宿主应用冲突请改用别的组合。选中预览不自动发送消息；原文与译文的朗读也不插入文字。
+
+完整步骤和排障：[中文帮助](docs/help/zh-Hans.md) · [English guide](docs/help/en.md) · [Panduan Indonesia](docs/help/id.md)。应用内“使用说明”提供同样的离线三语帮助。
+
+## 开发与许可
+
+使用 Swift、InputMethodKit、AppKit/SwiftUI、Rime 和 SQLite。Apple Silicon/macOS 26、Swift 工具链与 Homebrew `librime` 是当前构建前提。三个 Rime Vendor 目录是固定提交的 submodule，克隆时需运行 `git clone --recurse-submodules`，已有检出运行 `git submodule update --init --recursive`：
+
+```sh
+bash scripts/build.sh
+bash scripts/test.sh
+bash scripts/package.sh
+```
+
+项目自有代码按 [MIT License](LICENSE) 提供；Rime、词库与随包依赖保留各自许可证，详见 [第三方说明](THIRD_PARTY_NOTICES.md)。问题与贡献请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [SECURITY.md](SECURITY.md)。

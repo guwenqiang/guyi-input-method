@@ -1,0 +1,62 @@
+{
+  "zh-Hans": {
+    "notReady": "译文未就绪，请稍候",
+    "disabled": "该译文语言尚未开启"
+  },
+  "zh-Hant": {
+    "notReady": "譯文尚未就緒，請稍候",
+    "disabled": "尚未啟用此翻譯語言"
+  },
+  "en": {
+    "notReady": "Translation is not ready. Please wait.",
+    "disabled": "This translation language is not enabled."
+  },
+  "id": {
+    "notReady": "Terjemahan belum siap. Tunggu sebentar.",
+    "disabled": "Bahasa terjemahan ini belum diaktifkan."
+  },
+  "ja": {
+    "notReady": "翻訳中です。しばらくお待ちください。",
+    "disabled": "この翻訳言語は有効になっていません。"
+  },
+  "ko": {
+    "notReady": "번역 중입니다. 잠시 기다려 주세요.",
+    "disabled": "이 번역 언어는 활성화되어 있지 않습니다."
+  },
+  "es": {
+    "notReady": "La traducción aún no está lista. Espera un momento.",
+    "disabled": "Este idioma de traducción no está habilitado."
+  },
+  "fr": {
+    "notReady": "Traduction en cours. Veuillez patienter.",
+    "disabled": "Cette langue de traduction n’est pas activée."
+  },
+  "de": {
+    "notReady": "Übersetzung läuft. Bitte warten.",
+    "disabled": "Diese Übersetzungssprache ist nicht aktiviert."
+  },
+  "pt": {
+    "notReady": "A tradução ainda não está pronta. Aguarde.",
+    "disabled": "Este idioma de tradução não está ativado."
+  },
+  "ru": {
+    "notReady": "Перевод ещё не готов. Подождите.",
+    "disabled": "Этот язык перевода не включён."
+  },
+  "ar": {
+    "notReady": "الترجمة غير جاهزة بعد. يُرجى الانتظار.",
+    "disabled": "لغة الترجمة هذه غير مفعّلة."
+  },
+  "hi": {
+    "notReady": "अनुवाद अभी तैयार नहीं है। कृपया प्रतीक्षा करें।",
+    "disabled": "यह अनुवाद भाषा सक्षम नहीं है।"
+  },
+  "th": {
+    "notReady": "คำแปลยังไม่พร้อม โปรดรอสักครู่",
+    "disabled": "ยังไม่ได้เปิดใช้ภาษาสำหรับการแปลนี้"
+  },
+  "vi": {
+    "notReady": "Bản dịch chưa sẵn sàng. Vui lòng chờ.",
+    "disabled": "Ngôn ngữ dịch này chưa được bật."
+  }
+}

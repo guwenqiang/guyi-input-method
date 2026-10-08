@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+backend='/Library/Input Methods/GuYi输入法.app'
+launcher='/Applications/GuYi输入法.app'
+/usr/bin/codesign --verify --deep --strict "$backend"
+/usr/bin/codesign --verify --deep --strict "$launcher"
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+if test "$console_user" = root || test "$console_user" = loginwindow; then exit 0; fi
+console_uid=$(/usr/bin/id -u "$console_user")
+registry='/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+as_user() { /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" "$@"; }
+as_user "$registry" -f "$backend" || echo 'Input method registration will be retried when opened.'
+as_user "$registry" -f "$launcher" || echo 'Application registration will be retried when opened.'
+as_user "$backend/Contents/MacOS/guyi" --register-input-source || echo 'Add GuYi in System Settings > Keyboard > Text Input.'
+# Publish the new IMK endpoint in the current login session after the old backend
+# was stopped. Do not disable/re-enable sources, overwrite input preferences, or
+# launch a short-lived helper that requests input-method consent during upgrades.
+as_user /usr/bin/open -g "$backend" || echo 'Open GuYi Input Method from Applications to start its background service.'
+echo 'GuYi files installed. Open GuYi Input Method from Applications, then add it in Keyboard settings.'

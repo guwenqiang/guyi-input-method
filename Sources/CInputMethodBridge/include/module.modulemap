@@ -1,0 +1,4 @@
+module CInputMethodBridge {
+    header "CInputMethodBridge.h"
+    export *
+}

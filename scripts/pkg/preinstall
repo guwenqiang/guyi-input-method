@@ -1,0 +1,50 @@
+#!/bin/bash
+set -euo pipefail
+if test "${3:-/}" != /; then
+    echo 'GuYi installs only on the current startup volume.' >&2
+    exit 1
+fi
+for directory in '/Library/Input Methods' /Applications; do
+    if test -L "$directory"; then echo 'Refusing redirected installation directory.' >&2; exit 1; fi
+done
+backend='/Library/Input Methods/GuYi输入法.app'
+launcher='/Applications/GuYi输入法.app'
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+if test "$console_user" != root && test "$console_user" != loginwindow; then
+    user_home=$(/usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory | /usr/bin/sed 's/^NFSHomeDirectory: //')
+    for directory in '/Library/Input Methods' "$user_home/Library/Input Methods"; do
+        for name in 'GuYi输入法.app' 'GuYi Input Method.app' Guyi.app; do
+            candidate="$directory/$name"
+            test "$candidate" != "$backend" || continue
+            if test -f "$candidate/Contents/Info.plist" && test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist" 2>/dev/null)" = app.guyi.inputmethod.Guyi; then
+                echo 'Another GuYi input-method copy exists. Remove the older application copy before installing; keep your personal data.' >&2
+                exit 1
+            fi
+        done
+    done
+fi
+for bundle in "$backend" "$launcher"; do
+    if test -L "$bundle"; then echo 'Refusing a symbolic-link application destination.' >&2; exit 1; fi
+    if test -e "$bundle"; then
+        expected=app.guyi.inputmethod.Guyi
+        if test "$bundle" = "$launcher"; then expected=app.guyi.launcher; fi
+        actual=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")
+        if test "$actual" != "$expected"; then echo 'An unrelated application occupies the destination.' >&2; exit 1; fi
+    fi
+done
+for name in guyi GuYi; do
+    while read -r process_id; do
+        test -n "$process_id" || continue
+        executable=$(/bin/ps -p "$process_id" -o comm=)
+        case "$executable" in
+            "$backend/Contents/MacOS/guyi"|"$launcher/Contents/MacOS/GuYi") /bin/kill -TERM "$process_id" ;;
+            *) echo 'Another GuYi development or user installation is running. Quit it before installing.' >&2; exit 1 ;;
+        esac
+    done < <(/usr/bin/pgrep -x "$name" || true)
+done
+for attempt in {1..20}; do
+    if ! /usr/bin/pgrep -x guyi >/dev/null && ! /usr/bin/pgrep -x GuYi >/dev/null; then exit 0; fi
+    /bin/sleep 0.25
+done
+echo 'GuYi did not stop normally; installation cancelled without forcing it.' >&2
+exit 1

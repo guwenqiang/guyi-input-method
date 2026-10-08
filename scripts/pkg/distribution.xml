@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>GuYi Input Method</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <volume-check><allowed-os-versions><os-version min="26.0"/></allowed-os-versions></volume-check>
+    <choices-outline><line choice="guyi"/></choices-outline>
+    <choice id="guyi" visible="false" title="GuYi Input Method"><pkg-ref id="app.guyi.installer"/></choice>
+    <pkg-ref id="app.guyi.installer" onConclusion="None">GuYi-component.pkg</pkg-ref>
+</installer-gui-script>

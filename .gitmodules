@@ -1,0 +1,9 @@
+[submodule "Vendor/essay"]
+    path = Vendor/essay
+    url = https://github.com/rime/rime-essay.git
+[submodule "Vendor/luna-pinyin"]
+    path = Vendor/luna-pinyin
+    url = https://github.com/rime/rime-luna-pinyin.git
+[submodule "Vendor/prelude"]
+    path = Vendor/prelude
+    url = https://github.com/rime/rime-prelude.git
