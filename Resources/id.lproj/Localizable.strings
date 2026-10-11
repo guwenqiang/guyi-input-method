@@ -92,9 +92,7 @@
 "例如：授信额度 = credit limit = limit kredit。术语表会随翻译请求发送。" = "Contoh: 授信额度 = credit limit = limit kredit. Dikirim bersama permintaan terjemahan.";
 "权限与隐私" = "Izin dan privasi";
 "用户词库不上传。开启译文缓存后，译文会保存到本机数据库，可定期过期或手动清除；它不是加密保险箱。" = "Kamus pengguna tetap lokal. Cache terjemahan disimpan dalam basis data lokal tanpa enkripsi, dengan kedaluwarsa dan penghapusan manual.";
-"原生 InputMethodKit 输入法，无需辅助功能或剪贴板权限。Enter 上屏原文，Esc 撤销；译文上屏转换成单行并移除控制字符，不发送回车。" = "Input native InputMethodKit. Esc membatalkan komposisi. Terjemahan dimasukkan sebagai satu baris tanpa karakter kontrol atau penekanan Return.";
 "测试中…" = "Menguji…";
-"测试连接与三语翻译" = "Uji koneksi dan terjemahan";
 "保存中…" = "Menyimpan…";
 "保存设置" = "Simpan pengaturan";
 "未读取到密钥，可以重新填写，或在系统授权窗口允许访问。" = "Kunci belum tersedia. Izinkan akses atau masukkan kunci pengganti.";

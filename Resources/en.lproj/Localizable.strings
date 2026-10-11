@@ -97,9 +97,7 @@
 "例如：授信额度 = credit limit = limit kredit。术语表会随翻译请求发送。" = "Example: 授信额度 = credit limit = limit kredit. Included in translation requests.";
 "权限与隐私" = "Permissions and privacy";
 "用户词库不上传。开启译文缓存后，译文会保存到本机数据库，可定期过期或手动清除；它不是加密保险箱。" = "Your dictionary stays local. Enabled translation caches are stored in a local, unencrypted database with expiry and manual clearing.";
-"原生 InputMethodKit 输入法，无需辅助功能或剪贴板权限。Enter 上屏原文，Esc 撤销；译文上屏转换成单行并移除控制字符，不发送回车。" = "Native InputMethodKit input. Esc cancels composition. Inserted translations are single-line text without control characters or Return keystrokes.";
 "测试中…" = "Testing…";
-"测试连接与三语翻译" = "Test connection and translation";
 "保存中…" = "Saving…";
 "保存设置" = "Save settings";
 "未读取到密钥，可以重新填写，或在系统授权窗口允许访问。" = "Key unavailable. Authorize access or enter a replacement.";

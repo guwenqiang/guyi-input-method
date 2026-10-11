@@ -6,7 +6,7 @@
 
 **Berkomunikasi lintas bahasa tanpa meninggalkan kolom pengetikan.** GuYi adalah metode input (IME) native untuk Apple Silicon/macOS 26. Rime menangani Pinyin Mandarin secara lokal; API model AI pilihan Anda menampilkan terjemahan dekat kursor untuk dipilih, disalin, atau dibacakan. Teks yang dipilih di aplikasi lain juga dapat diterjemahkan di dekatnya. Kartu belajar opsional menjelaskan kosakata, IPA, tata bahasa dan contoh.
 
-GuYi ditujukan bagi pelajar, tim lintas negara, staf dukungan, dan pengguna yang sering berganti antara Mandarin, Inggris dan Indonesia. Mode input pendek cocok untuk balasan harian; pintasan yang dapat diubah mengaktifkan komposisi kalimat penuh saat diperlukan.
+GuYi ditujukan bagi pelajar, tim lintas negara, staf dukungan, dan pengguna yang berkomunikasi lintas bahasa. Lima mode inputnya mencakup Pinyin Mandarin, Inggris, Indonesia, kana Jepang, dan Korea 2-Set; bahasa tujuan terjemahan diatur terpisah. Mode input pendek cocok untuk balasan harian; pintasan yang dapat diubah mengaktifkan komposisi kalimat penuh saat diperlukan.
 
 > Kompatibilitas: Tetap sediakan metode input sistem. Di Chrome, Caps Lock beralih ke ABC sistem; gunakan “中 / EN” atau pintasan khusus agar tetap memakai GuYi. Seleksi lintas aplikasi dan latensi layanan cloud masih diuji.
 

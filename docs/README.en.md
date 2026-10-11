@@ -6,7 +6,7 @@
 
 **Write across languages without leaving the text field.** GuYi is a native macOS input method (IME) for Apple Silicon/macOS 26. Rime handles local Chinese Pinyin; your chosen AI API returns translations near the caret for explicit insertion, copying or speech. Select text in another app to translate it nearby. Optional learning cards explain vocabulary, IPA, grammar and examples.
 
-It is designed for students, multilingual teams, support staff and anyone who alternates between Chinese, English and Indonesian. Short composition stays quick for everyday replies; a customizable shortcut enables whole-sentence composition when needed.
+It is designed for students, multilingual teams, support staff and anyone who communicates across languages. Its five input modes cover Chinese Pinyin, English, Indonesian, Japanese kana and Korean 2-Set; translation targets are configured separately. Short composition stays quick for everyday replies; a customizable shortcut enables whole-sentence composition when needed.
 
 > Compatibility: Keep a system input source available. In Chrome, Caps Lock switches to system ABC; use “中 / EN” or a custom shortcut to stay in GuYi. Cross-app selection and cloud latency are still being checked.
 
