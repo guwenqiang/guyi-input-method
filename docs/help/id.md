@@ -52,7 +52,7 @@ Nama berkas di dialog Simpan, kolom satu baris biasa, pencarian kontak dan kolom
 
 ## 6. Pembelajaran, cache dan konten tersimpan
 
-Tombol buku membuka “Pelajari cara menggunakannya” untuk IPA Inggris/Indonesia, kata kunci, tata bahasa, tingkat formalitas dan contoh sesuai kebutuhan. Penjelasan dibantu AI, bukan verifikasi kamus. Mengubah teks asli menghapus penjelasan lama. Pembacaan memakai suara macOS yang tersedia; suara pria/wanita alami tertentu tidak dijanjikan.
+Tombol buku membuka “Pelajari cara menggunakannya” untuk IPA Inggris/Indonesia, kata kunci, tata bahasa, tingkat formalitas dan contoh sesuai kebutuhan. Jika hanya satu terjemahan yang dapat dipelajari sedang terbuka, pelajaran dimulai otomatis; jika Inggris dan Indonesia sama-sama terbuka, pilih bahasanya. Penjelasan dibantu AI, bukan verifikasi kamus. Mengubah teks asli menghapus penjelasan lama. Pembacaan memakai suara macOS yang tersedia; suara pria/wanita alami tertentu tidak dijanjikan.
 
 GuYi memeriksa cache memori dan SQLite terbatas sebelum memakai jaringan. Masa simpan bawaan tujuh hari, dapat menjadi 1–365 hari, dimatikan atau dibersihkan, dan hanya menyimpan terjemahan lengkap bagi bahasa tujuan aktif. Pergantian model atau protokol API memakai ulang terjemahan untuk akun layanan, teks sumber, dan pengaturan terjemahan yang sama. Tombol segarkan memakai model saat ini dan mengganti terjemahan dalam cache. Alamat API atau kunci yang berbeda tidak berbagi cache. Kosakata daring dapat diperbarui harian; kegagalan tetap memakai daftar lokal. Pembelajaran frasa Rime terpisah dari cache terjemahan.
 

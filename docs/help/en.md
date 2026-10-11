@@ -52,7 +52,7 @@ Save-dialog filenames, ordinary single-line fields, contact search and secure fi
 
 ## 6. Learning, cache and reusable content
 
-The book button opens “Learn how to use it” for on-demand English/Indonesian IPA, key words, grammar, register and examples. These are AI-assisted rather than dictionary-verified. Editing the source clears the old lesson. Speech uses available macOS voices; no specific natural male/female voice is promised.
+The book button opens “Learn how to use it” for on-demand English/Indonesian IPA, key words, grammar, register and examples. If only one learnable translation is expanded, opening the book starts its lesson automatically; when both are expanded, choose a language. These are AI-assisted rather than dictionary-verified. Editing the source clears the old lesson. Speech uses available macOS voices; no specific natural male/female voice is promised.
 
 GuYi checks bounded memory and SQLite caches before the network. Retention defaults to seven days, can be set to 1–365 days, disabled or cleared, and stores only complete translations for enabled targets. Switching models or API protocols reuses translations for the same service account, source text and translation settings. Refresh uses the current model and replaces the cached translation. Different API addresses or keys do not share cache entries. Online vocabulary can update daily; failure keeps the local lexicon. Rime personal word learning is separate from the translation cache.
 

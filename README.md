@@ -1,4 +1,4 @@
-# GuYi Input Method
+# GuYi Input Method - macOS 多语言输入法
 
 ![GuYi logo](assets/guyi-logo.png)
 
