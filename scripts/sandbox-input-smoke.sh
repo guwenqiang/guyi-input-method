@@ -41,7 +41,7 @@ trap 'cp "$output" .build/sandbox-input-smoke.log; cp "$errors" .build/sandbox-i
 swiftc scripts/sandbox-input-driver.swift -o .build/sandbox-input-driver
 open -n -W --stdout "$output" --stderr "$errors" "$fixture" --args --external-events "$@" &
 launcher=$!
-.build/sandbox-input-driver "$output" &
+.build/sandbox-input-driver "$output" "$@" &
 driver=$!
 sleep 2
 osascript <<'APPLESCRIPT'
@@ -67,7 +67,15 @@ wait "$launcher"
 driver_result=0
 wait "$driver" || driver_result=$?
 cat "$output"
-if test "$driver_result" != 0 || grep -Eq 'FAIL|BLOCKED' "$output" || ! grep -q 'PASS · Candidate anchor' "$output"; then
+expected='PASS · Candidate anchor'
+if [[ " $* " == *' --basic-only '* ]]; then expected='PASS · Basic input fixture completed'; fi
+if [[ " $* " == *' --multilingual '* ]]; then expected='PASS · Multilingual fixture completed'; fi
+if [[ " $* " == *' --rapid-input '* ]]; then expected='PASS · Rapid input preserved'; fi
+if [[ " $* " == *' --selection '* ]]; then expected='PASS · Selection fixture completed'; fi
+if [[ " $* " == *' --inspect-candidate '* ]]; then expected='PASS · Candidate inspection completed'; fi
+if [[ " $* " == *' --inspect-emoji '* ]]; then expected='PASS · Emoji candidate explicitly inserted'; fi
+if [[ " $* " == *' --manual-acceptance '* ]]; then expected='PASS · Manual input committed'; fi
+if test "$driver_result" != 0 || grep -Eq 'FAIL|BLOCKED' "$output" || ! grep -q "$expected" "$output"; then
     tail -20 "$errors" >&2
     exit 1
 fi

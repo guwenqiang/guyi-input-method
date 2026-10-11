@@ -1,5 +1,6 @@
 import Foundation
 import CRimeBridge
+import GuyiCore
 
 final class RimeEngine {
     static let ready: Bool = {
@@ -24,7 +25,11 @@ final class RimeEngine {
     func key(_ key: Int32) -> Bool { guyi_rime_key(session, key) != 0 }
     func select(_ index: Int) { _ = guyi_rime_select(session, Int32(index)) }
     func clear() { guyi_rime_clear(session) }
-    func learning(_ enabled: Bool) { guyi_rime_learning(session, enabled ? 1 : 0) }
+    func configure(language: Language, learning: Bool) -> Bool {
+        let schema = language == .ja ? (learning ? "jaroomaji" : "guyi_japanese_private") :
+            (learning ? "guyi_pinyin" : "guyi_private")
+        return guyi_rime_select_schema(session, schema) != 0
+    }
     func finish() -> String { guyi_rime_finish(session); return commit() }
     func commit() -> String { take(guyi_rime_commit(session)) }
     var rawInput: String { take(guyi_rime_raw(session)) }

@@ -8,6 +8,24 @@ func runShortcutTests() throws {
  try check(InputShortcuts.action(key:38,modifiers:2048,settings:s,hasCandidates:false)=="translateJa", "Custom Japanese binding is recognized")
  s=TranslationSettings()
  try check(InputShortcuts.conflicts(settings:s).isEmpty,"Default functional shortcuts do not conflict")
+ try check(InputShortcuts.action(key:17,modifiers:4096 | 2048,settings:s,hasCandidates:false)=="toggleSelectionTranslation",
+           "Default selection pause shortcut is available outside composition")
+ try check(Language.inputModes == [.zh, .en, .id, .ja, .ko], "Input languages are separate from translation targets")
+ try check(Language.nativeInputMode(preferredLanguages:["ja-JP"]) == .ja &&
+           Language.nativeInputMode(preferredLanguages:["ko-KR"]) == .ko &&
+           Language.nativeInputMode(preferredLanguages:["id-ID"]) == .id &&
+           Language.nativeInputMode(preferredLanguages:["zh-Hans-CN"]) == .zh,
+           "System native input language selects the Caps Lock partner")
+ try check(InputShortcuts.action(key:37,modifiers:4096 | 2048,settings:s,hasCandidates:false)=="toggleNativeEnglish",
+           "Native-English toggle has a configurable default shortcut")
+ s.inputShortcuts=["toggleNativeEnglish":.init(key:32,modifiers:4096 | 2048)]
+ try check(InputShortcuts.action(key:32,modifiers:4096 | 2048,settings:s,hasCandidates:false)=="toggleNativeEnglish" &&
+           InputShortcuts.action(key:37,modifiers:4096 | 2048,settings:s,hasCandidates:false)==nil,
+           "Custom native-English shortcut replaces default")
+ s=TranslationSettings()
+ try check(InputShortcuts.action(key:38,modifiers:4096 | 2048,settings:s,hasCandidates:false)=="inputJapanese" &&
+           InputShortcuts.action(key:40,modifiers:4096 | 2048,settings:s,hasCandidates:false)=="inputKorean",
+           "Japanese and Korean have direct customizable input shortcuts")
  try check(InputShortcuts.action(key:24,modifiers:0,settings:s,hasCandidates:true)=="nextCandidates","Equals pages candidates")
  try check(InputShortcuts.action(key:24,modifiers:0,settings:s,hasCandidates:false)==nil,"Equals remains available for arithmetic when idle")
  s.inputShortcuts=["nextCandidates":.init(key:47,modifiers:2048)]
@@ -18,5 +36,5 @@ func runShortcutTests() throws {
  s.inputShortcuts?["nextCandidates"] = .init(key:29,modifiers:2048)
  try check(!InputShortcuts.conflicts(settings:s).isEmpty,"Duplicate functional bindings are rejected")
  s.inputShortcuts=["cycleLanguage":.init(key:21,modifiers:4352)]
- try check(InputShortcuts.conflicts(settings:s).isEmpty,"Hidden screenshot shortcut does not reserve a key")
+ try check(InputShortcuts.conflicts(settings:s).isEmpty,"Unassigned shortcut does not conflict with functional bindings")
 }

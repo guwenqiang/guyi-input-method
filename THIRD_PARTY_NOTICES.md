@@ -8,6 +8,8 @@
 | luna-pinyin | https://github.com/rime/rime-luna-pinyin | LGPL-3.0；保留 Vendor 下 LICENSE、AUTHORS、原词典 |
 | essay | https://github.com/rime/rime-essay | LGPL-3.0；保留 Vendor 下 LICENSE、AUTHORS、原语料 |
 | prelude | https://github.com/rime/rime-prelude | 开发时参考，不是当前方案必需运行资源 |
+| rime-jaroomaji 罗马字方案及假名表 | https://github.com/lazyfoxchan/rime-jaroomaji (37ebca7) | Apache-2.0；首期仅随包提供假名输入，不包含独立许可的汉字词典 |
+| HangulComposer 韩语 2-Set 组合器 | https://github.com/jureuk7/GeulGuard (d3a710e) | MIT；保留原版权与许可证，集成到 GuYiCore |
 | OpenCC / glog / gflags / yaml-cpp / leveldb / snappy / marisa | Homebrew formula 对应上游 | 动态库打包进 App，许可证复制到 Resources/Licenses |
 | 网络附加词库 | https://github.com/iDvel/rime-ice | 运行时下载 others.dict.yaml；需保留上游来源与许可审查，不宣称为本项目独创 |
 

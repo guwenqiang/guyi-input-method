@@ -6,7 +6,6 @@ import GuyiCore
 final class AppDelegate {
     static let shared = AppDelegate()
     let preferences = Preferences()
-    func prepareForScreenshot() {}
 }
 
 @main
@@ -15,9 +14,9 @@ struct SettingsUISmoke {
         _ = NSApplication.shared
         let previous = InterfaceLanguage.shared.preference
         defer { InterfaceLanguage.shared.preference = previous }
-        for language in ["zh-Hans", "en", "id"] {
+        for language in ["zh-Hans", "en", "id", "ja", "ko"] {
             InterfaceLanguage.shared.preference = language
-            let expected = language == "en" ? "Settings" : language == "id" ? "Pengaturan" : "设置"
+            let expected = ["en": "Settings", "id": "Pengaturan", "ja": "設定", "ko": "설정"][language] ?? "设置"
             guard Localizer.text("设置") == expected else { fatalError("Localization bundle failed") }
             let host = NSHostingView(rootView: SettingsView(preferences: AppDelegate.shared.preferences))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)

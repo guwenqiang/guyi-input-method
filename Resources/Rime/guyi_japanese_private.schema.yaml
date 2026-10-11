@@ -1,0 +1,9 @@
+__include: jaroomaji.schema:/
+schema:
+  schema_id: guyi_japanese_private
+  name: GuYi 日本語（学習なし）
+  version: "1.0"
+__patch:
+  schema/schema_id: guyi_japanese_private
+  schema/name: GuYi 日本語（学習なし）
+  translator/enable_user_dict: false

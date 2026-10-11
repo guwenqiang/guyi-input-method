@@ -22,6 +22,8 @@ for localization in (root / "Resources").glob("*.lproj"):
     shutil.copytree(localization, resources / localization.name)
 shutil.copy2(root / "Vendor/luna-pinyin/luna_pinyin.dict.yaml", resources / "Rime")
 shutil.copy2(root / "Vendor/essay/essay.txt", resources / "Rime")
+shutil.copy2(root / "Vendor/rime-jaroomaji/jaroomaji.schema.yaml", resources / "Rime")
+shutil.copy2(root / "Vendor/rime-jaroomaji/jaroomaji.kana_kigou.dict.yaml", resources / "Rime")
 shutil.copytree(Path("/opt/homebrew/share/opencc"), resources / "Rime/opencc", dirs_exist_ok=True)
 licenses = resources / "Licenses"
 licenses.mkdir()
@@ -29,6 +31,8 @@ shutil.copy2(root / "Vendor/luna-pinyin/LICENSE", licenses / "luna-pinyin-LGPL-3
 shutil.copy2(root / "Vendor/luna-pinyin/AUTHORS", licenses / "luna-pinyin-AUTHORS.txt")
 shutil.copy2(root / "Vendor/luna-pinyin/README.md", licenses / "luna-pinyin-README.md")
 shutil.copy2(root / "Vendor/essay/LICENSE", licenses / "essay-LGPL-3.txt")
+shutil.copy2(root / "Vendor/rime-jaroomaji/LICENSE", licenses / "rime-jaroomaji-Apache-2.0.txt")
+shutil.copy2(root / "Vendor/GeulGuard-LICENSE", licenses / "GeulGuard-MIT.txt")
 shutil.copy2(root / "Vendor/essay/AUTHORS", licenses / "essay-AUTHORS.txt")
 shutil.copy2(root / "Vendor/GPL-3.0.txt", licenses / "GPL-3.0.txt")
 shutil.copy2(root / "Vendor/essay/essay.txt", licenses / "essay-source.txt")

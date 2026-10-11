@@ -17,6 +17,8 @@ func runCalculatorTests() throws {
         let actual = try Calculator.evaluate(expression)
         try check(actual == expected, "Exact calculator: " + expression)
     }
+    try check(Calculator.trailingExpression(in: "5+5+5=15+5") == "15+5", "Chained calculations start at the last result")
+    try check(Calculator.trailingExpression(in: "答案是5+5+5") == "5+5+5", "Calculation can recover the text before the caret")
     for expression in ["", ".", "5/0", "0/0", "0^0", "0^-1", "2^13", "2^0.5", "2**3", "1+", "(1+2", "1+2)", "3,44", "3.444,50", "1,,000", "1234,567", "1/2abc", "sqrt(4)", "1.2.3", "9223372036854775807+1", "9223372036854775807*2", "1/0.0000000000000000001", String(repeating: "(", count: 40) + "1" + String(repeating: ")", count: 40)] {
         do { _ = try Calculator.evaluate(expression); throw Failure.check("Calculator accepted invalid expression: " + expression) }
         catch is Calculator.Failure { print("PASS · Calculator rejects invalid, ambiguous or overflowing expression") }

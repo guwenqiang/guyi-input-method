@@ -3,6 +3,16 @@ import Foundation
 public enum Language: String, Codable, CaseIterable, Identifiable {
     case auto, zh, en, id, ja, ko, es, fr, de, pt, ru, ar, hi, th, vi
     public static var targets: [Language] { allCases.filter { $0 != .auto } }
+    public static let inputModes: [Language] = [.zh, .en, .id, .ja, .ko]
+    public static func nativeInputMode(preferredLanguages: [String] = Locale.preferredLanguages) -> Language {
+        let primary = preferredLanguages.first?.split(separator: "-").first.map(String.init)?.lowercased()
+        switch primary {
+        case "ja": return .ja
+        case "ko": return .ko
+        case "id": return .id
+        default: return .zh
+        }
+    }
     public var id: String { rawValue }
     public var title: String {
         switch self {
@@ -60,6 +70,17 @@ public struct Translation: Codable, Equatable {
         return Translation(source: source, zh: source == .zh ? original : zh,
                     en: source == .en ? original : en, id: source == .id ? original : id, note: note, additional: extra.isEmpty ? nil : extra)
     }
+
+    public func merging(_ newer: Translation) -> Translation {
+        var extra = additional ?? [:]
+        for (language, text) in newer.additional ?? [:] where !text.isEmpty { extra[language] = text }
+        return Translation(source: source == .auto ? newer.source : source,
+                           zh: newer.zh.isEmpty ? zh : newer.zh,
+                           en: newer.en.isEmpty ? en : newer.en,
+                           id: newer.id.isEmpty ? id : newer.id,
+                           note: note.isEmpty ? newer.note : note,
+                           additional: extra.isEmpty ? nil : extra)
+    }
 }
 
 public enum CloudAPIProtocol: String, Codable, CaseIterable {
@@ -68,6 +89,8 @@ public enum CloudAPIProtocol: String, Codable, CaseIterable {
 
 public struct TranslationSettings: Codable, Equatable {
     public var apiProtocol: CloudAPIProtocol?
+    public var plainJSONOutput: Bool?
+    public var cachePreviousModels: [String]?
     public var candidateTheme: String?
     public var candidateBackgroundHex: String?
     public var candidateAccentHex: String?
@@ -92,9 +115,6 @@ public struct TranslationSettings: Codable, Equatable {
     public var emojiCandidates: Bool?
     public var showPinyin: Bool?
     public var hotwordsEnabled: Bool?
-    public var screenshotEnabled: Bool?
-    public var screenshotKey: UInt32?
-    public var screenshotModifiers: UInt32?
     public var translationCacheDays: Int?
     public var effectiveCacheDays: Int { max(0, min(365, translationCacheDays ?? 7)) }
     public var translationTargets: [Language] {
@@ -105,11 +125,17 @@ public struct TranslationSettings: Codable, Equatable {
     public var learnInput = true
     public init() {}
 
-    public func validatedURL() throws -> URL {
+    public func validatedBaseURL() throws -> URL {
         guard let base = URL(string: endpoint), ["http", "https"].contains(base.scheme?.lowercased() ?? ""),
               let host = base.host, !host.isEmpty,
-              base.user == nil, base.password == nil, base.query == nil, base.fragment == nil,
-              !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              base.user == nil, base.password == nil, base.query == nil, base.fragment == nil else {
+            throw TranslationError.configuration
+        }
+        return base
+    }
+    public func validatedURL() throws -> URL {
+        let base = try validatedBaseURL()
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw TranslationError.configuration
         }
         return base.appendingPathComponent("responses")
@@ -175,6 +201,7 @@ public struct OpenAITranslator: StreamingTranslating {
         otherwise note must be empty. source must be an allowed ISO language code.
         Write any necessary note in the note_language requested in the user data, not automatically in English.
         Only translate the enabled target languages listed in the user data. Disabled language fields must be empty strings.
+        \(settings.plainJSONOutput == true ? "Return exactly one raw JSON object, without Markdown or explanation. Its keys must be exactly: \(fields.joined(separator: ", ")). Every value must be a string. Use an allowed ISO code in source; fill every enabled target completely and use empty strings for disabled targets and an unnecessary note." : "")
         """
         let input: [String: String] = ["source_hint": settings.source.rawValue, "style": settings.tone,
                                       "glossary": settings.glossary, "text": text, "note_language": Localizer.code,
@@ -187,6 +214,9 @@ public struct OpenAITranslator: StreamingTranslating {
                                  "schema": ["type": "object", "properties": properties,
                                             "required": fields, "additionalProperties": false]]]
         ]
+        if settings.plainJSONOutput == true && settings.effectiveAPIProtocol != .anthropic {
+            body.removeValue(forKey: "text")
+        }
         // Live translation needs a bounded reasoning budget. Unknown model
         // families retain their provider defaults instead of unsupported fields.
         let modelID = settings.model.lowercased()

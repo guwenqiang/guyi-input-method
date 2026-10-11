@@ -52,5 +52,20 @@ struct CacheLatency {
         let calls = await network.calls
         print("Network requests: \(calls). Local cache benchmark only; not cloud SLA acceptance.")
         guard calls == 0 else { exit(1) }
+        let cold = TranslationCache(diskURL: url)
+        var switched = settings
+        switched.model = "new-model"
+        switched.apiProtocol = .chatCompletions
+        switched.cachePreviousModels = ["model-a", "model-b", "model-c", "model-d"]
+        var coldMilliseconds: [Double] = []
+        for index in 0..<100 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let result = await cold.persistedReusable(text: "new phrase \(index)", settings: switched)
+            guard result == nil else { exit(1) }
+            coldMilliseconds.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+        }
+        coldMilliseconds.sort()
+        print(String(format: "legacy-cold-miss: n=100 p50=%.2fms p99=%.2fms max=%.2fms",
+                     coldMilliseconds[49], coldMilliseconds[98], coldMilliseconds[99]))
     }
 }

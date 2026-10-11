@@ -15,8 +15,8 @@ AGENTS.md
 docs/*.md
 !docs/README.en.md
 !docs/README.id.md
+!docs/使用说明.md
 docs/*.html
-!docs/使用说明.html
 *.dmg
 *.pkg
 *.zip

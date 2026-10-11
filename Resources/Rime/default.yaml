@@ -2,5 +2,7 @@ config_version: "1.0"
 schema_list:
   - schema: guyi_pinyin
   - schema: guyi_private
+  - schema: jaroomaji
+  - schema: guyi_japanese_private
 menu:
   page_size: 5

@@ -11,8 +11,11 @@ import GuyiCore
         if let attributes=try? FileManager.default.attributesOfItem(atPath:file.path),
            attributes[.type] as? FileAttributeType == .typeRegular,
            (attributes[.size] as? Int ?? Int.max)<2_000_000,
-           let data=try? Data(contentsOf:file),let saved=try? JSONDecoder().decode(LearnedPhrases.self,from:data),
-           saved.entries.count<=2048,saved.entries.allSatisfy({LearnedPhrases.valid($0.pinyin,text:$0.text)}) {phrases=saved}
+           let data=try? Data(contentsOf:file),var saved=try? JSONDecoder().decode(LearnedPhrases.self,from:data),
+           saved.entries.count<=2048 {
+            saved.compact()
+            phrases=saved
+        }
     }
     func matches(_ code:String)->[String]{phrases.matches(code)}
     func record(_ code:String,text:String){

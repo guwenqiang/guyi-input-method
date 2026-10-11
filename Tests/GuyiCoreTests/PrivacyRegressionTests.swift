@@ -7,6 +7,12 @@ struct DelayedPrivacyFixture: Translating {
         return Translation(source: .zh, zh: text, en: "late", id: "lambat", note: "")
     }
 }
+struct SlowValidTranslationFixture: Translating {
+    func translate(_ text: String, settings: TranslationSettings, apiKey: String) async throws -> Translation {
+        try await Task.sleep(for: .milliseconds(8_500))
+        return Translation(source: .zh, zh: text, en: "Delayed result", id: "", note: "")
+    }
+}
 @MainActor func runPrivacyRegressionTests() async throws {
     try check(ShortcutMessages.language(preference: "system", systemLanguages: ["fr-FR"]) == "fr", "Shortcut feedback follows French system language")
     try check(ShortcutMessages.language(preference: "system", systemLanguages: ["ja-JP"]) == "ja", "Shortcut feedback follows Japanese system language")
@@ -41,6 +47,21 @@ struct DelayedPrivacyFixture: Translating {
     waiting.update(text: "ordinary uncached fixture", composing: false, settings: shortDeadline, apiKey: "fixture-key", immediate: true)
     try await Task.sleep(nanoseconds: 150_000_000)
     try check(!waiting.busy && waiting.result == nil && timeoutCache.entryCount == 0, "Deadline stops waiting and late response never enters cache")
+    var slowDeadline = settings
+    slowDeadline.source = .zh
+    slowDeadline.enabledLanguages = [.en]
+    slowDeadline.timeoutSeconds = 20
+    let slow = TranslationSession(translator: SlowValidTranslationFixture(), cache: TranslationCache())
+    slow.update(text: "Slow valid sentence", composing: false, settings: slowDeadline, apiKey: "fixture-key", immediate: true)
+    let noticeDeadline = Date().addingTimeInterval(10)
+    while slow.status != Localizer.text("翻译仍在处理…"), Date() < noticeDeadline {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    try check(slow.busy && slow.status == Localizer.text("翻译仍在处理…"),
+              "No preview after eight seconds informs the user without discarding the request")
+    await slow.waitForCurrentRequest()
+    try check(slow.result?.en == "Delayed result" && !slow.busy,
+              "A valid response after eight seconds remains usable before the configured deadline")
     var fast = settings
     fast.model = "gpt-6"
     let request = try OpenAITranslator().request("ordinary fixture", settings: fast, apiKey: "fixture-key")
@@ -58,5 +79,10 @@ struct DelayedPrivacyFixture: Translating {
     try check(!LiteralTokenPolicy.begins(raw: "google", selected: "谷歌", precedingLatin: "", punctuation: "."), "Explicit Chinese candidate selection is respected")
     try check(LiteralTokenPolicy.continues("com/path?q=5&n=1") && !LiteralTokenPolicy.continues(" ") && !LiteralTokenPolicy.continues("，"), "Address continuation stops at natural boundaries")
     for word in ["ok", "hello", "thanks", "github", "OK"] { try check(MixedInputCandidates.preferredEnglish(word) == word, "Common English has a direct first candidate") }
+    try check(MixedInputCandidates.translationSource(for: "work", inputLanguage: .zh) == .en,
+              "English first candidate in Chinese input requests translations from English")
+    try check(MixedInputCandidates.translationSource(for: "guyi", inputLanguage: .zh) == .zh &&
+              MixedInputCandidates.translationSource(for: "中文 work", inputLanguage: .zh) == .zh,
+              "Pinyin and mixed composition keep the Chinese translation source")
     for code in ["nihao", "shi", "guyi", "an", "wo", "can", "men", "randomunknownvalue"] { try check(MixedInputCandidates.preferredEnglish(code) == nil, "Pinyin and unknown tokens are not forced to English") }
 }

@@ -9,7 +9,11 @@ struct SettingsView: View {
     @State private var section = "cloud"
     @State private var providerDrafts: ProviderDrafts
     @State private var draft: TranslationSettings
+    @State private var defaultInputLanguage: Language
     @State private var key: String
+    @State private var serviceName: String
+    @State private var selectedServiceID: String?
+    @State private var creatingService = false
     @State private var message = ""
     @State private var testing = false
     @State private var saving = false
@@ -23,7 +27,15 @@ struct SettingsView: View {
     init(preferences: Preferences) {
         self.preferences = preferences
         _draft = State(initialValue: preferences.settings)
+        _defaultInputLanguage = State(initialValue: preferences.inputLanguage)
         _key = State(initialValue: preferences.apiKey)
+        let savedProfile = ServiceProfiles.shared.saved.profiles.first(where: {
+            $0.endpoint == preferences.settings.endpoint && $0.apiProtocol == preferences.settings.effectiveAPIProtocol &&
+                $0.model == preferences.settings.model && $0.apiKey == preferences.apiKey
+        })
+        _selectedServiceID = State(initialValue: savedProfile?.id)
+        _serviceName = State(initialValue: savedProfile?.name
+                             ?? ServiceProfile.suggestedName(endpoint: preferences.settings.endpoint))
         _providerDrafts = State(initialValue: ProviderDrafts(settings: preferences.settings, key: preferences.apiKey))
     }
     var body: some View {
@@ -70,6 +82,8 @@ struct SettingsView: View {
                         Text(verbatim: "简体中文").tag("zh-Hans")
                         Text(verbatim: "English").tag("en")
                         Text(verbatim: "Bahasa Indonesia").tag("id")
+                        Text(verbatim: "日本語").tag("ja")
+                        Text(verbatim: "한국어").tag("ko")
                     }
                     Picker("候选框主题", selection: Binding(get: { draft.candidateTheme ?? "dark" }, set: { draft.candidateTheme = $0 })) {
                         Text("浅色").tag("light")
@@ -97,28 +111,68 @@ struct SettingsView: View {
                 }
                 if section == "cloud" {
                 Section("云端接口") {
-                    if !serviceProfiles.saved.profiles.isEmpty {
-                        Picker("已配置服务", selection: Binding(get: { ServiceProfile.identity(endpoint: draft.endpoint) }, set: { id in
-                            guard let profile = serviceProfiles.saved.profiles.first(where: { $0.id == id }) else { return }
-                            setProvider(profile.applying(to: draft))
-                        })) {
-                            if !serviceProfiles.saved.profiles.contains(where: { $0.id == ServiceProfile.identity(endpoint: draft.endpoint) }) {
-                                Text("当前服务").tag(ServiceProfile.identity(endpoint: draft.endpoint))
+                    HStack {
+                        if !serviceProfiles.saved.profiles.isEmpty {
+                            Picker("已配置服务", selection: Binding(get: { selectedServiceID ?? "new" }, set: { id in
+                                guard let profile = serviceProfiles.saved.profiles.first(where: { $0.id == id }) else { return }
+                                setProvider(profile.applying(to: draft), selectedID: profile.id,
+                                            rememberCurrent: !creatingService)
+                                creatingService = false
+                                serviceName = profile.name
+                            })) {
+                                if selectedServiceID == nil || !serviceProfiles.saved.profiles.contains(where: { $0.id == selectedServiceID }) {
+                                    Text("当前服务").tag(selectedServiceID ?? "new")
+                                }
+                                ForEach(serviceProfiles.saved.profiles) { profile in Text(profile.title).tag(profile.id) }
                             }
-                            ForEach(serviceProfiles.saved.profiles) { profile in Text(profile.title).tag(profile.id) }
+                        } else {
+                            Text(Localizer.text("尚无已配置服务")).foregroundStyle(.secondary)
                         }
+                        Spacer(minLength: 8)
+                        Button {
+                            var settings = draft
+                            settings.endpoint = ""
+                            settings.model = ""
+                            setProvider(.init(settings: settings, key: ""), rememberCurrent: !creatingService)
+                            selectedServiceID = UUID().uuidString
+                            creatingService = true
+                            serviceName = ""
+                        } label: {
+                            Label(Localizer.text("新建"), systemImage: "plus")
+                        }.help(Localizer.text("创建独立服务配置，原服务不会修改。"))
+                        Menu {
+                            Button(Localizer.text("从 Codex 导入 OpenAI API Key")) { importLocal(.codex) }
+                            Button(Localizer.text("从 Claude Code 导入 Anthropic API Key")) { importLocal(.claudeCode) }
+                        } label: {
+                            Label(Localizer.text("导入"), systemImage: "square.and.arrow.down")
+                        }.help(Localizer.text("载入本机 API 配置"))
                     }
-                    Picker("接口协议", selection: Binding(get: { draft.effectiveAPIProtocol }, set: { setProvider(providerDrafts.switchingProtocol(to: $0, from: currentProvider)) })) {
+                    TextField(Localizer.text("服务名称"), text: $serviceName,
+                              prompt: Text(Localizer.text("例如：工作账号")))
+                        .help(Localizer.text("用于区分已保存的服务配置。"))
+                    Picker("接口协议", selection: Binding(get: { draft.effectiveAPIProtocol }, set: {
+                        setProvider(providerDrafts.switchingProtocol(to: $0, from: currentProvider,
+                            reuseSaved: !creatingService), selectedID: selectedServiceID,
+                            rememberCurrent: !creatingService)
+                    })) {
                         Text(verbatim: "Responses").tag(CloudAPIProtocol.responses)
                         Text(verbatim: "Claude / Anthropic Messages").tag(CloudAPIProtocol.anthropic)
                         Text(Localizer.text("Chat Completions（通用兼容接口）")).tag(CloudAPIProtocol.chatCompletions)
                     }
-                    Text("按接口协议接入服务；豆包 / 火山方舟可使用 Responses 或 Chat Completions。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if draft.effectiveAPIProtocol != .anthropic {
+                        Toggle("兼容输出（由 GuYi 校验 JSON）", isOn: Binding(
+                            get: { draft.plainJSONOutput == true },
+                            set: { draft.plainJSONOutput = $0 }
+                        )).help(Localizer.text("用于不支持 JSON Schema 输出格式的兼容接口。"))
+                    }
                     SecureField("API Key", text: $key)
                         .help("API Key 仅保存在本机配置中。")
                     if !preferences.keyStatus.isEmpty { Text(Localizer.text(preferences.keyStatus)).font(.caption).foregroundStyle(.secondary) }
-                    TextField("API 地址", text: Binding(get: { draft.endpoint }, set: { setProvider(providerDrafts.switchingEndpoint(to: $0, from: currentProvider)) }))
+                    TextField("API 地址", text: Binding(get: { draft.endpoint }, set: {
+                        setProvider(providerDrafts.switchingEndpoint(to: $0, from: currentProvider,
+                            reuseSaved: !creatingService), selectedID: selectedServiceID,
+                            rememberCurrent: !creatingService)
+                    }))
                     if URL(string: draft.endpoint)?.host?.hasSuffix("volces.com") == true {
                         Text("火山方舟基础地址示例：https://ark.cn-beijing.volces.com/api/v3")
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -127,14 +181,16 @@ struct SettingsView: View {
                         Text("当前使用 HTTP，连接未加密。")
                             .font(.caption).foregroundStyle(.orange)
                     }
-                    TextField("模型 ID", text: $draft.model)
-                        .help("豆包 / 火山方舟可填写已开通的模型 ID 或 ep- 开头的推理接入点 ID。")
-                    Button(Localizer.text(loadingModels ? "读取中…" : "读取服务可用模型")) {
+                    HStack {
+                        TextField("模型 ID", text: $draft.model)
+                            .help("豆包 / 火山方舟可填写已开通的模型 ID 或 ep- 开头的推理接入点 ID。")
+                        Button(Localizer.text(loadingModels ? "读取中…" : "读取模型")) {
                         guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             message = Localizer.text("请填写此服务的 API Key。")
                             return
                         }
                         loadingModels = true
+                        message = ""
                         let revision = providerRevision
                         let settings = draft
                         let credential = key
@@ -147,7 +203,8 @@ struct SettingsView: View {
                                 message = models.isEmpty ? "服务未返回模型列表" : "已读取模型列表；选择后请测试翻译。"
                             } catch { if revision == providerRevision { message = error.localizedDescription } }
                         }
-                    }.disabled(loadingModels)
+                        }.disabled(loadingModels)
+                    }
                     if !models.isEmpty {
                         Picker("服务模型", selection: $draft.model) {
                             if !models.contains(draft.model) { Text(draft.model).tag(draft.model) }
@@ -158,8 +215,8 @@ struct SettingsView: View {
                 }
                 if section == "input" {
                 Section("输入与翻译") {
-                    Toggle("显示拼音提示", isOn: Binding(get: { draft.showPinyin == true }, set: { draft.showPinyin = $0 }))
-                    Toggle("拼音联想表情", isOn: Binding(get: { draft.emojiCandidates != false }, set: { draft.emojiCandidates = $0 }))
+                    Toggle("仅中文输入时显示拼音提示", isOn: Binding(get: { draft.showPinyin == true }, set: { draft.showPinyin = $0 }))
+                    Toggle("多语言表情联想", isOn: Binding(get: { draft.emojiCandidates != false }, set: { draft.emojiCandidates = $0 }))
                     Text("Return 原样输入拼音或英文 · 空格选择中文")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("网络词库 · 每日更新", isOn: Binding(get: { draft.hotwordsEnabled != false }, set: { draft.hotwordsEnabled = $0 }))
@@ -169,6 +226,9 @@ struct SettingsView: View {
                         Button("立即更新") { hotwords.check(force: true) }.disabled(hotwords.updating || preferences.settings.hotwordsEnabled == false)
                     }
                     Toggle("选中文本后翻译", isOn: Binding(get: { draft.translateSelection != false }, set: { draft.translateSelection = $0 }))
+                    if draft.translateSelection != false || draft.translateClipboard != false {
+                        Toggle("暂停划词与复制翻译", isOn: Binding(get: { preferences.selectionTranslationPaused }, set: { _ in preferences.toggleSelectionTranslation() }))
+                    }
                     if draft.translateSelection != false {
                         Toggle("选中时自动复制原文", isOn: Binding(get: { draft.copySelectionAutomatically == true }, set: { draft.copySelectionAutomatically = $0 }))
                         Text("默认不改动剪贴板；复制译文需点击对应按钮。").font(.caption).foregroundStyle(.secondary)
@@ -222,8 +282,8 @@ struct SettingsView: View {
                     Toggle("整句翻译模式", isOn: Binding(get: { draft.sentenceComposition == true }, set: { draft.sentenceComposition = $0 }))
                         .help("空格先选词；没有待转换拼音时，再按空格提交整句原文。输入时预览翻译，译文需明确选择后提交。")
                     Toggle("学习常用词与组词习惯（仅保存在本机用户词库）", isOn: $draft.learnInput)
-                    Picker("原文语言", selection: $draft.source) {
-                        ForEach(Language.allCases) { Text(Localizer.text($0.title)).tag($0) }
+                    Picker(Localizer.text("默认输入语言"), selection: $defaultInputLanguage) {
+                        ForEach(Language.inputModes) { Text(Localizer.text($0.title)).tag($0) }
                     }
                     Picker("语气", selection: $draft.tone) {
                         ForEach(["忠实自然，保留原文语气", "商务专业，但不添加信息", "日常口语，自然简洁"], id: \.self) { Text(Localizer.text($0)).tag($0) }
@@ -275,11 +335,6 @@ struct SettingsView: View {
                 }
                 if section == "general" {
                 Section("权限与隐私") {
-                    if !TerminalCapsLockSwitch.hardwareAccessGranted {
-                        Button("允许 Caps Lock 中英文切换…") { TerminalCapsLockSwitch.shared.requestHardwareAccess() }
-                        Text("仅接收 Caps Lock 键，不接收其他键的内容。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
                     Text("用户词库不上传。开启译文缓存后，译文会保存到本机数据库，可定期过期或手动清除；它不是加密保险箱。")
                         .font(.caption)
                 }
@@ -298,17 +353,29 @@ struct SettingsView: View {
                 Text(Brand.version).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Button(Localizer.text(saving ? "保存中…" : "保存设置")) {
                     guard InputShortcuts.conflicts(settings: draft).isEmpty else { message = Localizer.text("快捷键存在重复，请调整后保存。"); return }
+                    guard (1...64).contains(serviceName.trimmingCharacters(in: .whitespacesAndNewlines).count) else {
+                        message = Localizer.text("服务名称需为 1–64 个字符。")
+                        return
+                    }
                     testTask?.cancel()
                     testing = false
                     saving = true
                     Task { @MainActor in
-                        do { try await preferences.save(draft, key: key); message = "已保存，重启后仍然有效。" }
+                        do {
+                            let id = selectedServiceID ?? UUID().uuidString
+                            try await preferences.save(draft, key: key, serviceName: serviceName,
+                                                       serviceID: id, newService: creatingService,
+                                                       defaultInputLanguage: defaultInputLanguage)
+                            selectedServiceID = id
+                            creatingService = false
+                            message = "已保存，重启后仍然有效。"
+                        }
                         catch { message = error.localizedDescription }
                         saving = false
                     }
                 }.buttonStyle(.borderedProminent).disabled(saving)
             }
-        }.padding(16).frame(width: 660, height: 610)
+        }.padding(16).frame(width: 660, height: 510)
         .background(Color(nsColor: .windowBackgroundColor))
         .environment(\.locale, interfaceLanguage.locale)
         .sheet(isPresented: $showingQuickContent) {
@@ -317,13 +384,7 @@ struct SettingsView: View {
                 Button(Localizer.text("关闭")) { showingQuickContent = false }.padding(.bottom, 16)
             }
         }
-        .task {
-            if !serviceProfiles.saved.profiles.contains(where: { $0.id == ServiceProfile.identity(endpoint: preferences.settings.endpoint) }) {
-                do { try await serviceProfiles.remember(settings: preferences.settings, key: preferences.apiKey) }
-                catch { message = "服务配置未能保存到本机，请检查配置目录权限。" }
-            }
-        }
-        .onDisappear { testTask?.cancel(); rememberServiceDraft() }
+        .onDisappear { testTask?.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: .guyiSettingsChanged)) { _ in
             if saving { draft = preferences.settings; providerDrafts.remember(currentProvider) }
         }
@@ -360,23 +421,31 @@ struct SettingsView: View {
         bindings[action] = binding
         draft.inputShortcuts = bindings
     }
-    private func rememberServiceDraft() {
-        let settings = draft, credential = key
-        Task { @MainActor in
-            do { try await serviceProfiles.remember(settings: settings, key: credential) }
-            catch { message = "服务配置未能保存到本机，请检查配置目录权限。" }
+    private func importLocal(_ source: LocalServiceImport.Source) {
+        do {
+            setProvider(try LocalServiceImport.load(source, current: draft))
+            message = Localizer.text("已载入草稿。请核对地址和模型，测试连接后保存。")
+        } catch {
+            message = error.localizedDescription
         }
     }
-    private func setProvider(_ form: ProviderDrafts.Form) {
-        rememberServiceDraft()
+    private func setProvider(_ form: ProviderDrafts.Form, selectedID: String? = nil,
+                             rememberCurrent: Bool = true) {
+        let previousName = serviceName
+        let editingSameService = selectedID != nil && selectedID == selectedServiceID
+        if rememberCurrent { providerDrafts.remember(currentProvider) }
         providerRevision += 1
         loadingModels = false
         testTask?.cancel()
         testing = false
         draft.endpoint = form.settings.endpoint
         draft.apiProtocol = form.settings.apiProtocol
+        draft.plainJSONOutput = form.settings.plainJSONOutput
         draft.model = form.settings.model
         key = form.key
+        selectedServiceID = selectedID
+        serviceName = serviceProfiles.saved.profiles.first(where: { $0.id == selectedID })?.name
+            ?? (editingSameService ? previousName : ServiceProfile.suggestedName(endpoint: form.settings.endpoint))
         models = []
         message = ""
     }

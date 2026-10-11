@@ -7,12 +7,6 @@ final class HotwordStore {
     func configure(enabled: Bool) {}
 }
 
-@MainActor
-final class ScreenshotService {
-    static let shared = ScreenshotService()
-    func configure(enabled: Bool, key: UInt32, modifiers: UInt32) {}
-}
-
 @main
 struct PreferencesUpgradeSmoke {
     @MainActor static func main() async throws {
@@ -27,8 +21,12 @@ struct PreferencesUpgradeSmoke {
         settings.model = "fixture-model"
         settings.enabledLanguages = [.zh, .id, .ja]
         settings.translationCacheDays = 15
-        settings.screenshotKey = 8
         let data = try JSONEncoder().encode(settings)
+        var legacy = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        legacy["obsoleteFeatureFlag"] = true
+        let migrated = try JSONDecoder().decode(TranslationSettings.self,
+            from: JSONSerialization.data(withJSONObject: legacy))
+        precondition(migrated == settings, "Unknown old settings must not break saved preferences")
         defaults.set(data, forKey: "translationSettings")
         defaults.set(true, forKey: "configured")
         defaults.set(true, forKey: "realtimeInputMigration")
@@ -66,6 +64,9 @@ struct PreferencesUpgradeSmoke {
         var changedProvider = settings
         changedProvider.apiProtocol = .anthropic
         do { try await original.save(changedProvider, key: ""); fatalError("Old key was reused for a new provider") }
+        catch TranslationError.missingKey {}
+        do { try await original.save(settings, key: "", serviceID: UUID().uuidString, newService: true)
+             fatalError("New service inherited the active credential at the same address") }
         catch TranslationError.missingKey {}
         precondition(original.apiKey == "fixture-not-a-real-key" && original.settings == settings)
         print("PASS · Removed local mode does not silently upload; provider change requires an explicit key")

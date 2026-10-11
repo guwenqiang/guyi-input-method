@@ -6,7 +6,7 @@ uintptr_t guyi_rime_session(void);
 void guyi_rime_destroy(uintptr_t session);
 int guyi_rime_key(uintptr_t session, int key);
 void guyi_rime_clear(uintptr_t session);
-void guyi_rime_learning(uintptr_t session, int enabled);
+int guyi_rime_select_schema(uintptr_t session, const char *schema);
 void guyi_rime_finish(uintptr_t session);
 int guyi_rime_cursor(uintptr_t session);
 int guyi_rime_page(uintptr_t session);

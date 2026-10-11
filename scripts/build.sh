@@ -25,6 +25,11 @@ bash scripts/compile.sh
 python3 scripts/bundle.py
 swift scripts/icon.swift dist/.build.noindex/Guyi.app/Contents/Resources
 bash scripts/sign-app.sh dist/.build.noindex/Guyi.app
+# A signed build artifact shares the installed IME bundle ID. Keep only the
+# installed copy registered with LaunchServices after local builds.
+registry='/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+"$registry" -u "$PWD/dist/.build.noindex/Guyi.app" ||
+    printf 'WARNING: could not unregister the local build artifact; verify LaunchServices before installation.\n' >&2
 swiftc -swift-version 5 Sources/GuyiLauncher/main.swift -o .build/release/guyi-launcher
 python3 scripts/launcher-bundle.py
 swiftc -swift-version 5 Sources/GuyiInstaller/*.swift -o .build/release/InstallGuYi

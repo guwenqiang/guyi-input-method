@@ -26,14 +26,26 @@ public struct ProviderDrafts {
         protocols[form.settings.effectiveAPIProtocol] = id
         services[named ?? service(form.settings)] = id
     }
-    public mutating func switchingProtocol(to kind: CloudAPIProtocol, from current: Form) -> Form {
+    public mutating func switchingProtocol(to kind: CloudAPIProtocol, from current: Form,
+                                           reuseSaved: Bool = true) -> Form {
+        if !reuseSaved {
+            var settings = current.settings
+            settings.apiProtocol = kind
+            return Form(settings: settings, key: kind == current.settings.effectiveAPIProtocol ? current.key : "")
+        }
         remember(current)
         if let id = protocols[kind], let previous = forms[id] { return previous }
         var settings = current.settings
         settings.apiProtocol = kind
         return Form(settings: settings, key: "")
     }
-    public mutating func switchingEndpoint(to endpoint: String, from current: Form) -> Form {
+    public mutating func switchingEndpoint(to endpoint: String, from current: Form,
+                                           reuseSaved: Bool = true) -> Form {
+        if !reuseSaved {
+            var settings = current.settings
+            settings.endpoint = endpoint
+            return Form(settings: settings, key: current.key)
+        }
         remember(current)
         var settings = current.settings
         settings.endpoint = endpoint

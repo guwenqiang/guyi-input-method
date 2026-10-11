@@ -4,6 +4,15 @@ import GuyiCore
 func runProviderTests() throws {
     var settings = TranslationSettings()
     settings.endpoint = "https://example.invalid/v1"
+    settings.model = ""
+    let modelsURL = try settings.validatedBaseURL().appendingPathComponent("models")
+    try check(modelsURL.path == "/v1/models",
+              "Model list address is valid before a model ID is selected")
+    do {
+        _ = try settings.validatedURL()
+        throw Failure.check("Translation accepted an empty model ID")
+    } catch TranslationError.configuration { print("PASS · Translation still requires a model ID") }
+    settings.model = "fixture-model"
     settings.source = .zh
     settings.enabledLanguages = [.en, .id]
     let result: [String: Any] = ["source": "zh", "zh": "你好", "en": "Hello", "id": "Halo", "note": ""]
@@ -46,10 +55,15 @@ func runProviderTests() throws {
         try check(arkBody["reasoning"] == nil && arkBody["reasoning_effort"] == nil, "Opaque Doubao endpoint is not assigned OpenAI-specific reasoning settings")
         try check(ark.value(forHTTPHeaderField: "Authorization") == "Bearer ark-fixture-only", "Doubao request uses the explicitly supplied service credential")
     }
-    settings.apiProtocol = .anthropic
-    let blocks = try OpenAIBlockTranslator().request(["Hello", "Good morning"], target: .id, settings: settings, apiKey: "fixture-only")
-    let blockBody = try JSONSerialization.jsonObject(with: blocks.httpBody!) as! [String: Any]
-    let tools = blockBody["tools"] as! [[String: Any]]
-    let schema = tools[0]["input_schema"] as! [String: Any]
-    try check((schema["properties"] as? [String: Any])?["translations"] != nil, "Screenshot block schema adapts to Claude without losing mapping")
+    settings.apiProtocol = .responses
+    settings.plainJSONOutput = true
+    let compatible = try OpenAITranslator().request("请确认明天的安排。", settings: settings, apiKey: "fixture-only")
+    let compatibleBody = try JSONSerialization.jsonObject(with: compatible.httpBody!) as! [String: Any]
+    try check(compatibleBody["text"] == nil && (compatibleBody["instructions"] as? String)?.contains("raw JSON object") == true,
+              "Compatible Responses omits unsupported format parameters but requires JSON fields")
+    settings.apiProtocol = .chatCompletions
+    let compatibleChat = try OpenAITranslator().request("请确认明天的安排。", settings: settings, apiKey: "fixture-only")
+    let compatibleChatBody = try JSONSerialization.jsonObject(with: compatibleChat.httpBody!) as! [String: Any]
+    try check(compatibleChatBody["response_format"] == nil,
+              "Compatible Chat Completions omits unsupported response_format")
 }

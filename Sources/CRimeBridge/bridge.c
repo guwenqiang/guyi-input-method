@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 static RimeApi *api;
 char *guyi_rime_raw(uintptr_t session) {
@@ -25,6 +26,12 @@ int guyi_rime_start(const char *shared, const char *user) {
     api->setup(&traits);
     api->initialize(&traits);
     if (api->start_maintenance(False)) api->join_maintenance_thread();
+    for (int index = 0; index < 2; index++) {
+        const char *name = index == 0 ? "jaroomaji.schema.yaml" : "guyi_japanese_private.schema.yaml";
+        char path[PATH_MAX];
+        int length = snprintf(path, sizeof(path), "%s/%s", shared, name);
+        if (length > 0 && length < (int)sizeof(path)) api->deploy_schema(path);
+    }
     return 1;
 }
 
@@ -42,15 +49,19 @@ uintptr_t guyi_rime_session(void) {
 void guyi_rime_destroy(uintptr_t session) { if (api && session) api->destroy_session(session); }
 int guyi_rime_key(uintptr_t session, int key) { return api && session ? api->process_key(session, key, 0) : 0; }
 void guyi_rime_clear(uintptr_t session) { if (api && session) api->clear_composition(session); }
-void guyi_rime_learning(uintptr_t session, int enabled) {
-    if (!api || !session) return;
-    const char *schema = enabled ? "guyi_pinyin" : "guyi_private";
+int guyi_rime_select_schema(uintptr_t session, const char *schema) {
+    if (!api || !session || !schema) return 0;
     RIME_STRUCT(RimeStatus, status);
     if (api->get_status(session, &status)) {
         int changed = strcmp(status.schema_id, schema);
         api->free_status(&status);
-        if (changed) api->select_schema(session, schema);
+        if (!changed) return 1;
     }
+    if (!api->select_schema(session, schema)) return 0;
+    api->set_option(session, "ascii_mode", False);
+    if (strcmp(schema, "guyi_pinyin") == 0 || strcmp(schema, "guyi_private") == 0)
+        api->set_option(session, "simplification", True);
+    return 1;
 }
 void guyi_rime_finish(uintptr_t session) { if (api && session) api->commit_composition(session); }
 int guyi_rime_select(uintptr_t session, int index) {

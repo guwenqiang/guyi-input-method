@@ -16,8 +16,13 @@ import GuyiCore
         if let data = try? Self.read(file), let profiles = try? JSONDecoder().decode(ServiceProfileCollection.self, from: data),
            profiles.profiles.count <= 128, profiles.profiles.allSatisfy(\.isComplete) { saved = profiles; pending = profiles }
     }
-    func remember(settings: TranslationSettings, key: String) async throws {
-        let profile = ServiceProfile(settings: settings, key: key)
+    func remember(settings: TranslationSettings, key: String, name: String? = nil, id selectedID: String? = nil) async throws {
+        let id = selectedID ?? pending.profiles.first(where: {
+            $0.endpoint == settings.endpoint && $0.apiProtocol == settings.effectiveAPIProtocol &&
+                $0.model == settings.model && $0.apiKey == key
+        })?.id ?? ServiceProfile.profileID(endpoint: settings.endpoint, protocol: settings.effectiveAPIProtocol)
+        let existingName = pending.profiles.first(where: { $0.id == id })?.name
+        let profile = ServiceProfile(settings: settings, key: key, name: name ?? existingName, id: id)
         guard profile.isComplete else { return }
         if saved.profiles.contains(profile), pending.profiles.contains(profile) { return }
         var next = pending

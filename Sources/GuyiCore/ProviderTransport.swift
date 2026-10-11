@@ -14,15 +14,17 @@ public enum ProviderTransport {
         guard let data = canonical.httpBody,
               let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let instructions = body["instructions"] as? String,
-              let input = body["input"] as? String,
-              let text = body["text"] as? [String: Any], let format = text["format"] as? [String: Any],
-              let schema = format["schema"] as? [String: Any] else { throw TranslationError.configuration }
+              let input = body["input"] as? String else { throw TranslationError.configuration }
+        let format = (body["text"] as? [String: Any])?["format"] as? [String: Any]
+        let schema = format?["schema"] as? [String: Any]
+        guard settings.plainJSONOutput == true || schema != nil else { throw TranslationError.configuration }
         var request = canonical
         let base = try settings.validatedURL().deletingLastPathComponent()
         var adapted: [String: Any]
         switch settings.effectiveAPIProtocol {
         case .responses: return canonical
         case .anthropic:
+            guard let schema else { throw TranslationError.configuration }
             request.url = base.appendingPathComponent("messages")
             request.setValue(nil, forHTTPHeaderField: "Authorization")
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
@@ -34,8 +36,11 @@ public enum ProviderTransport {
         case .chatCompletions:
             request.url = base.appendingPathComponent("chat/completions")
             adapted = ["model": settings.model, "max_completion_tokens": body["max_output_tokens"] ?? 8192,
-                       "messages": [["role": "system", "content": instructions], ["role": "user", "content": input]],
-                       "response_format": ["type": "json_schema", "json_schema": ["name": format["name"] ?? "guyi_result", "strict": true, "schema": schema]]]
+                       "messages": [["role": "system", "content": instructions], ["role": "user", "content": input]]]
+            if let schema, settings.plainJSONOutput != true {
+                adapted["response_format"] = ["type": "json_schema", "json_schema":
+                    ["name": format?["name"] ?? "guyi_result", "strict": true, "schema": schema]]
+            }
         }
         if settings.effectiveAPIProtocol == .chatCompletions, let reasoning = body["reasoning"] as? [String: String] {
             adapted["reasoning_effort"] = reasoning["effort"]

@@ -15,6 +15,9 @@ public final class TranslationCache {
     private var retentionDays = 7
     private var diskTail: Task<Void, Never>?
     private var pendingWrites = 0
+    private var queuedWrites: [Data: Entry] = [:]
+    private var queuedOrder: [Data] = []
+    private var drainingQueuedWrites = false
     private var lastMaintenance = Date.distantPast
     public static let memoryLimit = 8 * 1024 * 1024
     public static let entryLimit = 1024
@@ -22,12 +25,102 @@ public final class TranslationCache {
         disk = diskURL.map { TranslationDiskCache(url: $0) }
         self.now = now
     }
-    public static func key(text: String, settings: TranslationSettings) -> Data {
-        let values: [String: String] = ["version": "6", "protocol": settings.effectiveAPIProtocol.rawValue, "note_language": Localizer.code, "text": text, "endpoint": settings.endpoint,
-            "model": settings.model, "source": settings.source.rawValue, "tone": settings.tone,
+    public static func key(text: String, settings: TranslationSettings, credential: String = "") -> Data {
+        makeKey(text: text, settings: settings, credential: credential, legacyModel: nil,
+                legacyProtocol: nil, includePlainOutput: false)
+    }
+    private static func makeKey(text: String, settings: TranslationSettings, credential: String,
+                                legacyModel: String?, legacyProtocol: CloudAPIProtocol?,
+                                includePlainOutput: Bool) -> Data {
+        let credentialHash = Data(SHA256.hash(data: Data(credential.utf8))).base64EncodedString()
+        let version = legacyModel != nil ? "7" : legacyProtocol != nil ? "8" : "9"
+        var values: [String: String] = ["version": version, "credential": credentialHash,
+            "note_language": Localizer.code, "text": text, "endpoint": settings.endpoint,
+            "source": settings.source.rawValue, "tone": settings.tone,
             "glossary": settings.glossary, "targets": settings.translationTargets.map(\.rawValue).sorted().joined(separator: ","), "whole_selection": settings.translateWholeSelection == true ? "1" : "0"]
+        if let legacyModel { values["model"] = legacyModel }
+        if let legacyProtocol { values["protocol"] = legacyProtocol.rawValue }
+        if includePlainOutput { values["plain_json_output"] = settings.plainJSONOutput == true ? "1" : "0" }
         let data = (try? JSONSerialization.data(withJSONObject: values, options: .sortedKeys)) ?? Data()
         return Data(SHA256.hash(data: data))
+    }
+    private static func legacyKeys(text: String, settings: TranslationSettings, credential: String) -> [Data] {
+        var seen = Set<String>()
+        let models = ([settings.model] + (settings.cachePreviousModels ?? []))
+            .filter { !$0.isEmpty && seen.insert($0).inserted }.prefix(5)
+        let protocols = [settings.effectiveAPIProtocol] + CloudAPIProtocol.allCases.filter { $0 != settings.effectiveAPIProtocol }
+        return protocols.flatMap { kind -> [Data] in
+            var keys: [Data] = []
+            for plain in [settings.plainJSONOutput == true, settings.plainJSONOutput != true] {
+                var legacySettings = settings
+                legacySettings.plainJSONOutput = plain
+                keys.append(makeKey(text: text, settings: legacySettings, credential: credential,
+                                    legacyModel: nil, legacyProtocol: kind, includePlainOutput: true))
+            }
+            for model in models {
+                for plain in [settings.plainJSONOutput == true, settings.plainJSONOutput != true] {
+                    var legacySettings = settings
+                    legacySettings.plainJSONOutput = plain
+                    keys.append(makeKey(text: text, settings: legacySettings, credential: credential,
+                                        legacyModel: model, legacyProtocol: kind, includePlainOutput: true))
+                }
+                keys.append(makeKey(text: text, settings: settings, credential: credential,
+                                    legacyModel: model, legacyProtocol: kind, includePlainOutput: false))
+            }
+            return keys
+        }
+    }
+    public func reusable(text: String, settings: TranslationSettings, credential: String = "") -> Translation? {
+        var combined: Translation?
+        for language in settings.translationTargets {
+            var single = settings
+            single.enabledLanguages = [language]
+            let sharedKey = Self.key(text: text, settings: single, credential: credential)
+            var value = get(sharedKey)
+            if value == nil {
+                for oldKey in Self.legacyKeys(text: text, settings: single, credential: credential) {
+                    if let old = get(oldKey) {
+                        value = old
+                        put(old, key: sharedKey, languages: [language], includeSource: settings.translateWholeSelection == true)
+                        break
+                    }
+                }
+            }
+            guard let value else { continue }
+            combined = combined?.merging(value) ?? value
+        }
+        return combined
+    }
+    public func persistedReusable(text: String, settings: TranslationSettings, credential: String = "") async -> Translation? {
+        var combined: Translation?
+        for language in settings.translationTargets {
+            var single = settings
+            single.enabledLanguages = [language]
+            let sharedKey = Self.key(text: text, settings: single, credential: credential)
+            var value = await getPersisted(sharedKey)
+            if value == nil {
+                for oldKey in Self.legacyKeys(text: text, settings: single, credential: credential) {
+                    if let old = await getPersisted(oldKey) {
+                        value = old
+                        put(old, key: sharedKey, languages: [language], includeSource: settings.translateWholeSelection == true)
+                        break
+                    }
+                }
+            }
+            guard let value else { continue }
+            combined = combined?.merging(value) ?? value
+        }
+        return combined
+    }
+    public func putReusable(_ result: Translation, text: String, settings: TranslationSettings,
+                            credential: String = "",
+                            expectedRevision: Int? = nil) {
+        for language in settings.translationTargets {
+            var single = settings
+            single.enabledLanguages = [language]
+            put(result, key: Self.key(text: text, settings: single, credential: credential), languages: [language],
+                expectedRevision: expectedRevision, includeSource: settings.translateWholeSelection == true)
+        }
     }
     public func get(_ key: Data) -> Translation? {
         guard retentionDays > 0, let entry = entries[key] else { return nil }
@@ -78,16 +171,51 @@ public final class TranslationCache {
         guard let data = try? JSONEncoder().encode(restricted), data.count <= 64_000, key.count == 32 else { return }
         let created = now()
         store(data: data, key: key, created: created)
-        guard disk != nil, pendingWrites < 16 else { return }
+        guard disk != nil else { return }
+        if pendingWrites >= 16 || drainingQueuedWrites {
+            queuedWrites[key] = Entry(data: data, created: created)
+            queuedOrder.removeAll { $0 == key }
+            queuedOrder.append(key)
+            if queuedOrder.count > Self.entryLimit, let oldest = queuedOrder.first {
+                queuedOrder.removeFirst()
+                queuedWrites.removeValue(forKey: oldest)
+            }
+            return
+        }
         pendingWrites += 1
         let version = revision
         let preceding = diskTail
         diskTail = Task {
             await preceding?.value
-            defer { pendingWrites -= 1 }
+            defer {
+                pendingWrites -= 1
+                drainQueuedWrites()
+            }
             guard version == revision else { return }
             let cutoff = created.addingTimeInterval(-Double(retentionDays) * 86400).timeIntervalSince1970
             await disk?.put(data, key: key, created: created.timeIntervalSince1970, cutoff: cutoff)
+        }
+    }
+    private func drainQueuedWrites() {
+        guard !drainingQueuedWrites else { return }
+        drainingQueuedWrites = true
+        defer { drainingQueuedWrites = false }
+        while pendingWrites < 16, !queuedOrder.isEmpty {
+            let key = queuedOrder.removeFirst()
+            guard let entry = queuedWrites.removeValue(forKey: key) else { continue }
+            pendingWrites += 1
+            let version = revision
+            let preceding = diskTail
+            diskTail = Task {
+                await preceding?.value
+                defer {
+                    pendingWrites -= 1
+                    drainQueuedWrites()
+                }
+                guard version == revision else { return }
+                let cutoff = entry.created.addingTimeInterval(-Double(retentionDays) * 86400).timeIntervalSince1970
+                await disk?.put(entry.data, key: key, created: entry.created.timeIntervalSince1970, cutoff: cutoff)
+            }
         }
     }
     private func store(data: Data, key: Data, created: Date) {
@@ -109,8 +237,14 @@ public final class TranslationCache {
     public func clear() {
         revision += 1
         entries.removeAll(); order.removeAll(); memoryBytes = 0
+        queuedWrites.removeAll(); queuedOrder.removeAll()
         let preceding = diskTail
         diskTail = Task { await preceding?.value; await disk?.clear() }
     }
-    public func flush() async { await diskTail?.value }
+    public func flush() async {
+        while let tail = diskTail {
+            await tail.value
+            if queuedOrder.isEmpty, pendingWrites == 0 { return }
+        }
+    }
 }

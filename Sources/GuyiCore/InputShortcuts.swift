@@ -19,15 +19,19 @@ public enum InputShortcuts {
     public static func translationLanguage(_ action: String) -> Language? {
         Language.targets.first { translationAction($0) == action }
     }
-    public static let actions = ["cycleLanguage", "cycleLanguageAlternate", "sentenceMode", "emoji"]
+    public static let actions = ["toggleNativeEnglish", "cycleLanguage", "cycleLanguageAlternate", "inputJapanese", "inputKorean", "sentenceMode", "toggleSelectionTranslation", "emoji"]
         + Language.targets.map(translationAction) + ["previousCandidates", "nextCandidates"]
         + (0...9).map { "copyContent\($0)" } + (0...9).map { "pasteContent\($0)" }
     public static func defaultBinding(_ action: String) -> InputShortcut {
         switch action {
+        case "toggleNativeEnglish": return .init(key: 37, modifiers: 4096 | 2048)
         case "emoji": return .init(key: 49, modifiers: 256 | 4096)
         case "cycleLanguage": return .init(key: 29, modifiers: 2048)
         case "cycleLanguageAlternate": return .init(key: 49, modifiers: 4096 | 512)
+        case "inputJapanese": return .init(key: 38, modifiers: 4096 | 2048)
+        case "inputKorean": return .init(key: 40, modifiers: 4096 | 2048)
         case "sentenceMode": return .init(key: 36, modifiers: 4096 | 2048)
+        case "toggleSelectionTranslation": return .init(key: 17, modifiers: 4096 | 2048)
         case "translateZh": return .init(key: 18, modifiers: 2048)
         case "translateEn": return .init(key: 19, modifiers: 2048)
         case "translateId": return .init(key: 20, modifiers: 2048)
@@ -69,10 +73,14 @@ public enum InputShortcuts {
     }
     public static func title(_ action: String) -> String {
         switch action {
+        case "toggleNativeEnglish": return "切换常用输入语言与英文"
         case "emoji": return "表情与符号"
-        case "cycleLanguage": return "切换原文语言"
+        case "cycleLanguage": return "循环输入语言"
         case "cycleLanguageAlternate": return "切换原文语言（备用）"
+        case "inputJapanese": return "切换日语输入"
+        case "inputKorean": return "切换韩语输入"
         case "sentenceMode": return "切换整句模式"
+        case "toggleSelectionTranslation": return "暂停或恢复划词与复制翻译"
         case "translateZh": return "插入中文译文"
         case "translateEn": return "插入英文译文"
         case "translateId": return "插入印尼语译文"

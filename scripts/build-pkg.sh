@@ -29,9 +29,11 @@ components = [{"RootRelativeBundlePath": path, "BundleIsRelocatable": False,
 with (stage / "components.plist").open("wb") as output:
     plistlib.dump(components, output)
 translations = {
-    "zh_CN": ("安装 GuYi输入法", "中文输入、实时翻译与截图工具。升级将保留个人配置和词库。"),
-    "en": ("Install GuYi Input Method", "Chinese input, live translation and screenshot tools. Updates preserve your settings and dictionaries."),
-    "id": ("Instal GuYi Input Method", "Input Mandarin, terjemahan langsung, dan alat tangkapan layar. Pembaruan mempertahankan pengaturan dan kamus Anda.")
+    "zh_CN": ("安装 GuYi输入法", "中文输入与实时翻译。升级将保留个人配置和词库。"),
+    "en": ("Install GuYi Input Method", "Chinese input and live translation. Updates preserve your settings and dictionaries."),
+    "id": ("Instal GuYi Input Method", "Input Mandarin dan terjemahan langsung. Pembaruan mempertahankan pengaturan dan kamus Anda."),
+    "ja": ("GuYi をインストール", "多言語入力と翻訳。更新時も設定と辞書は保持されます。"),
+    "ko": ("GuYi 설치", "다국어 입력 및 번역. 업데이트해도 설정과 사전은 유지됩니다.")
 }
 for language, (title, welcome) in translations.items():
     folder = stage / "resources" / (language + ".lproj")
@@ -40,7 +42,8 @@ for language, (title, welcome) in translations.items():
 
 PY
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$backend/Contents/Info.plist")
-pkgbuild --root "$stage/root" --component-plist "$stage/components.plist" --scripts "$stage/scripts" --identifier app.guyi.installer --version "$version" --install-location / "$stage/GuYi-component.pkg"
+build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$backend/Contents/Info.plist")
+pkgbuild --root "$stage/root" --component-plist "$stage/components.plist" --scripts "$stage/scripts" --identifier app.guyi.installer --version "$version.$build" --install-location / "$stage/GuYi-component.pkg"
 sign_flags=()
 if test -n "${GUYI_INSTALLER_IDENTITY:-}"; then
     case "$GUYI_INSTALLER_IDENTITY" in 'Developer ID Installer:'*) ;; *) echo 'Installer signing requires Developer ID Installer.' >&2; exit 1 ;; esac

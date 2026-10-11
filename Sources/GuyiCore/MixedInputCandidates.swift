@@ -24,4 +24,7 @@ public enum MixedInputCandidates {
               words.contains(raw.lowercased()) else { return nil }
         return raw
     }
+    public static func translationSource(for text: String, inputLanguage: Language) -> Language {
+        inputLanguage == .zh && preferredEnglish(text) != nil ? .en : inputLanguage
+    }
 }

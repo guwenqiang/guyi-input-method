@@ -9,15 +9,24 @@ import OSLog
 @MainActor
 final class GuyiInputController: IMKInputController {
     private let engine = RimeEngine()
+    private var hangul = HangulComposer()
     private weak var eventClient: IMKTextInput?
     private var inputClient: IMKTextInput? { eventClient ?? client() }
     private var sessionHostPID: pid_t?
     private let model = CandidateModel()
     private var panel: CandidatePanel?
     private var draft = ""
-    private var sentenceNeedsConfirmation = false
     private var language = Language.zh
     private var active = false
+    private var pendingMarkedTextReset = false
+    private struct SuspendedComposition {
+        let hostPID: pid_t
+        let language: Language
+        let draft: String
+        let raw: String
+        let hangul: HangulComposer
+    }
+    private var suspendedComposition: SuspendedComposition?
     private var inputModeIdentifier = "app.guyi.inputmethod.Guyi.pinyin"
     private var caret = NSRect.zero
     private var caretGeometry = CaretGeometry()
@@ -40,6 +49,7 @@ final class GuyiInputController: IMKInputController {
     private var observedSelection: NSRange?
     private var observedSelectionText: String?
     private var hotwordCandidates: Set<String> = []
+    private var emojiCandidates: Set<String> = []
     private var candidateEngineIndices: [Int?] = []
     private var lastChosenPhrase: (code: String, text: String, time: Date, clicks: UInt64)?
     private var previousCommittedCharacter: Character?
@@ -55,7 +65,7 @@ final class GuyiInputController: IMKInputController {
         }
     }
     private var preferences: Preferences { AppDelegate.shared.preferences }
-    private var bypassClient: Bool { InputSafety.bypassInputMethod(bundleIdentifier: inputClient?.bundleIdentifier()) || SensitiveContentPolicy.protectedApplication(inputClient?.bundleIdentifier()) || IsSecureEventInputEnabled() }
+    private var bypassClient: Bool { !InputSafety.allowsLocalComposition(bundleIdentifier: inputClient?.bundleIdentifier()) }
     private var ownsCurrentInputSource: Bool {
         guard InputSafety.allowsClientAccess(active: active, currentController: AppDelegate.shared.currentController === self,
                                              hasClient: inputClient != nil, sessionHostPID: sessionHostPID,
@@ -83,7 +93,8 @@ final class GuyiInputController: IMKInputController {
         active = true
         language = preferences.inputLanguage
         updateCaret()
-        engine.learning(preferences.settings.learnInput)
+        model.secureInputNotice = IsSecureEventInputEnabled()
+        _ = engine.configure(language: language, learning: preferences.settings.learnInput && !model.secureInputNotice)
         if observers.isEmpty {
             model.pick = { [weak self] in self?.choose($0) }
             model.insert = { [weak self] in self?.insertTranslation($0) }
@@ -91,14 +102,19 @@ final class GuyiInputController: IMKInputController {
             model.learn = { [weak self] in self?.learn($0) }
             model.retryTranslation = { [weak self] in
                 guard let self, self.active, self.ownsCurrentInputSource else { return }
+                self.translate(immediate: true, forceRefresh: true)
+            }
+            model.translationTargetsChanged = { [weak self] in
+                guard let self, self.active, self.ownsCurrentInputSource else { return }
+                if !self.model.requestedLanguages.contains(self.model.selectedOutput) { self.model.selectedOutput = self.language }
                 self.translate(immediate: true)
+                self.reposition()
             }
             model.settings = { AppDelegate.shared.showSettings() }
             model.cycle = { [weak self] in self?.cycleLanguage() }
             model.turnPage = { [weak self] in self?.turnPage($0) }
             model.toggleLanguage = { [weak self] in self?.toggleLanguage($0) }
             model.toggleSentence = { [weak self] in self?.preferences.toggleSentenceMode() }
-            model.emoji = { [weak self] in self?.showEmoji() }
             NotificationCenter.default.publisher(for: .guyiSentenceModeChanged).sink { [weak self] _ in
                 guard let self else { return }
                 self.model.sentenceMode = self.preferences.settings.sentenceComposition == true
@@ -117,10 +133,14 @@ final class GuyiInputController: IMKInputController {
             model.$expanded.dropFirst().sink { [weak self] _ in
                 DispatchQueue.main.async { self?.reposition() }
             }.store(in: &observers)
+            model.$lesson.dropFirst().sink { [weak self] _ in
+                DispatchQueue.main.async { self?.reposition() }
+            }.store(in: &observers)
             NotificationCenter.default.publisher(for: .guyiSettingsChanged).sink { [weak self] _ in
                 guard let self else { return }
-                self.engine.learning(self.preferences.settings.learnInput)
                 self.language = self.preferences.inputLanguage
+                _ = self.engine.configure(language: self.language,
+                    learning: self.preferences.settings.learnInput && !IsSecureEventInputEnabled())
                 self.resetLesson()
                 self.startClipboardObservation()
                 if self.active { self.refresh() }
@@ -132,13 +152,16 @@ final class GuyiInputController: IMKInputController {
             }.store(in: &observers)
         }
         model.language = language
+        model.translationSource = language
         model.themeSettings = preferences.settings
-        model.showPinyin = preferences.settings.showPinyin == true
+        model.showPinyin = language == .zh && preferences.settings.showPinyin == true
         model.sentenceMode = preferences.settings.sentenceComposition == true
         model.selectedOutput = language
         model.enabledLanguages = preferences.settings.enabledLanguages ?? [.zh, .en, .id]
+        model.restoreCollapsedLanguages()
         AppDelegate.shared.currentController = self
         auditLifecycle("activate")
+        restoreSuspendedComposition()
         startClipboardObservation()
     }
 
@@ -147,6 +170,13 @@ final class GuyiInputController: IMKInputController {
     }
 
     private func endSession() {
+        let hasComposition = !draft.isEmpty || !engine.state().preedit.isEmpty || hangul.hasComposition
+        if active, !bypassClient, hasComposition, let sessionHostPID {
+            suspendedComposition = SuspendedComposition(hostPID: sessionHostPID, language: language,
+                draft: draft, raw: engine.rawInput, hangul: hangul)
+        }
+        pendingMarkedTextReset = suspendedComposition == nil && (pendingMarkedTextReset || hasComposition)
+        InputLanguageIndicator.shared.hide()
         lastTranslationShortcutKey = nil
         TranslationSpeech.shared.stop()
         auditLifecycle("end")
@@ -165,13 +195,30 @@ final class GuyiInputController: IMKInputController {
         eventClient = nil
     }
 
+    private func restoreSuspendedComposition() {
+        guard let saved = suspendedComposition, saved.hostPID == sessionHostPID,
+              saved.language == language,
+              let marked = inputClient?.markedRange(), marked.location != NSNotFound,
+              marked.length > 0 else { return }
+        draft = saved.draft
+        hangul = saved.hangul
+        for scalar in saved.raw.unicodeScalars where scalar.isASCII {
+            _ = engine.key(Int32(scalar.value))
+        }
+        suspendedComposition = nil
+        pendingMarkedTextReset = false
+        refresh()
+    }
+
     override func inputControllerWillClose() {
         endSession()
         observers.removeAll()
         super.inputControllerWillClose()
     }
 
-    override func recognizedEvents(_ sender: Any!) -> Int { Int(NSEvent.EventTypeMask.keyDown.rawValue) }
+    override func recognizedEvents(_ sender: Any!) -> Int {
+        Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged]).rawValue)
+    }
 
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
         guard tag == Int(kTextServiceInputModePropertyTag) else {
@@ -191,12 +238,48 @@ final class GuyiInputController: IMKInputController {
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         if let sender = sender as? IMKTextInput { eventClient = sender }
-        guard !bypassClient else { engine.learning(false); clear(marked: false); return false }
-        guard let event, event.type == .keyDown else { return false }
+        guard !bypassClient else { _ = engine.configure(language: .zh, learning: false); clear(marked: false); return false }
+        guard let event else { return false }
+        if event.type == .flagsChanged {
+            guard event.keyCode == 57 else { return false }
+            let eventHasLock = event.modifierFlags.contains(.capsLock)
+            InputSourceDiagnostics.record("caps-received", eventHasLock: eventHasLock)
+            if InputSafety.capsUsesSystemInputSource(bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
+                InputSourceDiagnostics.record("caps-system-route", eventHasLock: eventHasLock)
+                return false
+            }
+            if !active || AppDelegate.shared.currentController !== self { activateServer(sender) }
+            if sessionHostPID == nil { sessionHostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier }
+            guard ownsCurrentInputSource else {
+                InputSourceDiagnostics.record("caps-rejected-source", eventHasLock: eventHasLock)
+                return false
+            }
+            let handled = CapsLanguageSwitch.shared.handlePhysicalState(eventHasLock: eventHasLock)
+            InputSourceDiagnostics.record(handled ? "caps-handled" : "caps-unhandled", eventHasLock: eventHasLock)
+            return handled
+        }
+        guard event.type == .keyDown else { return false }
         if !active || AppDelegate.shared.currentController !== self { activateServer(sender) }
+        let secureInput = IsSecureEventInputEnabled()
+        model.secureInputNotice = secureInput
+        _ = engine.configure(language: language, learning: preferences.settings.learnInput && !secureInput)
+        if secureInput { model.translation.invalidate() }
+        else if clipboardTimer == nil { startClipboardObservation() }
         if sessionHostPID == nil { sessionHostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier }
         guard ownsCurrentInputSource else { auditLifecycle("rejected-key-context"); return false }
+        if pendingMarkedTextReset {
+            pendingMarkedTextReset = false
+            if let marked = inputClient?.markedRange(), marked.location != NSNotFound, marked.length > 0 {
+                inputClient?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0),
+                                           replacementRange: NSRange(location: NSNotFound, length: 0))
+            }
+            if event.keyCode == 51 { return true }
+        }
+        if [51, 117].contains(event.keyCode) { SelectionTranslationService.shared.noteDeletion() }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let inputCharacters = language == .en || language == .id
+            ? InputSafety.englishText(event.characters, capsLock: flags.contains(.capsLock), shift: flags.contains(.shift))
+            : event.characters
         if event.keyCode == 9, flags.contains(.command) {
             SelectionTranslationService.shared.notePaste()
             clipboardChange = NSPasteboard.general.changeCount
@@ -206,6 +289,15 @@ final class GuyiInputController: IMKInputController {
             if [36, 76].contains(event.keyCode), flags.intersection([.command, .control, .option]).isEmpty {
                 guard let result = model.calculationResult else { NSSound.beep(); return true }
                 insertCalculation(result)
+                return true
+            }
+            if let result = model.calculationResult, let value = event.characters,
+               ["+", "-", "*", "/", "×", "÷", "^"].contains(value),
+               flags.intersection([.command, .control, .option]).isEmpty {
+                insertCalculation(result)
+                inputClient?.insertText(value, replacementRange: NSRange(location: NSNotFound, length: 0))
+                rememberCommittedText(value)
+                numericExpression += value
                 return true
             }
             clear(marked: false)
@@ -223,7 +315,7 @@ final class GuyiInputController: IMKInputController {
                 if event.isARepeat, lastTranslationShortcutKey == event.keyCode { return true }
                 guard !model.original.isEmpty else { return false }
                 lastTranslationShortcutKey = event.keyCode
-                guard model.enabledLanguages.contains(target) else {
+                guard model.requestedLanguages.contains(target) else {
                     showQuickContentStatus(ShortcutMessages.text(.disabled)); return true
                 }
                 if model.translation.selectableText(for: target) != nil { clearShortcutHint(); insertTranslation(target) }
@@ -236,19 +328,25 @@ final class GuyiInputController: IMKInputController {
                 return true
             }
             switch action {
+            case "toggleNativeEnglish": _ = toggleCapsLanguage(); return true
             case "emoji": showEmoji(); return true
             case "cycleLanguage", "cycleLanguageAlternate": cycleLanguage(); return true
+            case "inputJapanese": switchInputLanguage(.ja, showIdlePanel: false); return true
+            case "inputKorean": switchInputLanguage(.ko, showIdlePanel: false); return true
             case "sentenceMode": preferences.toggleSentenceMode(); return true
+            case "toggleSelectionTranslation":
+                preferences.toggleSelectionTranslation()
+                return true
             case "previousCandidates": turnPage(false); return true
             case "nextCandidates": turnPage(true); return true
             default: break
             }
         }
         lastTranslationShortcutKey = nil
-        if flags.contains(.capsLock), language == .zh {
+        if flags.contains(.capsLock), language != .en {
             resetPunctuationContext()
             if model.clipboardMode { clear(marked: false) }
-            if !engine.rawInput.isEmpty || !draft.isEmpty { commitRawInput() }
+            if !engine.rawInput.isEmpty || !draft.isEmpty || hangul.hasComposition { commitOriginal() }
             return false
         }
         if model.clipboardMode, ![36, 76, 53, 125, 126, 48].contains(event.keyCode),
@@ -258,6 +356,8 @@ final class GuyiInputController: IMKInputController {
             resetPunctuationContext()
             return false
         }
+        if language == .ko, !model.clipboardMode,
+           handleHangul(event: event, characters: inputCharacters) { return true }
         if literalToken != nil {
             if literalMouse != mouseDownCount { literalToken = nil }
             else if event.keyCode == 51 {
@@ -265,17 +365,15 @@ final class GuyiInputController: IMKInputController {
                 if literalToken?.isEmpty == true { literalToken = nil }
                 if preferences.settings.sentenceComposition == true, !draft.isEmpty {
                     draft.removeLast()
-                    sentenceNeedsConfirmation = true
                     refresh()
                     return true
                 }
                 previousCommittedCharacter = literalToken?.last
                 return false
-            } else if let text = event.characters, LiteralTokenPolicy.continues(text) {
+            } else if let text = inputCharacters, LiteralTokenPolicy.continues(text) {
                 literalToken?.append(contentsOf: text)
                 if preferences.settings.sentenceComposition == true {
                     draft += text
-                    sentenceNeedsConfirmation = true
                     refresh()
                     return true
                 }
@@ -290,7 +388,7 @@ final class GuyiInputController: IMKInputController {
             previousCommittedCharacter = numericExpression.last
             return false
         }
-        if [36, 76, 48, 51, 53, 115, 116, 117, 119, 121, 123, 124, 125, 126].contains(event.keyCode) {
+        if [36, 76, 48, 53, 115, 116, 117, 119, 121, 123, 124, 125, 126].contains(event.keyCode) {
             resetPunctuationContext()
         }
         switch event.keyCode {
@@ -303,16 +401,20 @@ final class GuyiInputController: IMKInputController {
             if model.selectedOutput != model.language { insertTranslation(model.selectedOutput); return true }
             if model.clipboardMode { clear(marked: false); return false }
             if InputSafety.returnCommitsRaw(language: language, rawInput: engine.rawInput,
-                                           selectedTranslation: false, clipboard: false) { commitRawInput(); return true }
-            if preferences.settings.sentenceComposition == true {
-                if sentenceNeedsConfirmation {
-                    sentenceNeedsConfirmation = false
+                                           selectedTranslation: false, clipboard: false) {
+                if preferences.settings.sentenceComposition == true {
+                    draft += engine.rawInput
+                    engine.clear()
                     refresh()
-                    return true
-                }
+                } else { commitRawInput() }
+                return true
+            }
+            if language == .ko, hangul.hasComposition { draft += hangul.commit() }
+            if preferences.settings.sentenceComposition == true {
                 commitOriginal()
                 return true
             }
+            if language == .ko { commitOriginal(); return true }
             if !model.candidates.isEmpty { choose(model.selected); return true }
             commitOriginal(); return true
         case 48:
@@ -321,7 +423,7 @@ final class GuyiInputController: IMKInputController {
             else { commitOriginal() }
             return false
         case 51:
-            if !engine.state().preedit.isEmpty { _ = engine.key(0xff08) }
+            if (language == .zh || language == .ja), !engine.state().preedit.isEmpty { _ = engine.key(0xff08) }
             else if !draft.isEmpty { draft.removeLast() }
             else { return false }
             refresh(); return true
@@ -351,13 +453,13 @@ final class GuyiInputController: IMKInputController {
             turnPage(event.keyCode == 121); return true
         default: break
         }
-        if event.characters == " ", InputSafety.spaceCommitsSentence(language: language,
+        if inputCharacters == " ", InputSafety.spaceCommitsSentence(language: language,
             sentenceMode: preferences.settings.sentenceComposition == true,
             hasPreedit: !engine.state().preedit.isEmpty, draft: draft) {
             commitOriginal()
             return true
         }
-        guard let characters = event.characters, !characters.isEmpty,
+        guard let characters = inputCharacters, !characters.isEmpty,
               !characters.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
         let raw = engine.rawInput
         let pendingLatin = raw.isEmpty ? LiteralTokenPolicy.latinWord(draft) : raw
@@ -368,7 +470,6 @@ final class GuyiInputController: IMKInputController {
             engine.clear()
             if preferences.settings.sentenceComposition == true {
                 draft = text
-                sentenceNeedsConfirmation = true
                 refresh()
             } else {
                 inputClient?.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -380,9 +481,12 @@ final class GuyiInputController: IMKInputController {
             return true
         }
         if previousCommittedMouseCount != mouseDownCount { numericExpression = ""; numericExpressionTooLong = false }
-        if characters == "=", numericExpression.contains(where: { $0.isNumber }), draft.isEmpty, engine.state().preedit.isEmpty {
-            showCalculation(numericExpression)
-            return true
+        if characters == "=", draft.isEmpty, engine.state().preedit.isEmpty {
+            let expression = calculationExpressionAtCaret() ?? numericExpression
+            if expression.contains(where: { $0.isNumber }) {
+                showCalculation(expression)
+                return true
+            }
         }
         if InputSafety.insertsWithoutComposition(characters, hasComposition: !draft.isEmpty || !engine.state().preedit.isEmpty) {
             lastChosenPhrase = nil
@@ -397,8 +501,8 @@ final class GuyiInputController: IMKInputController {
         }
         numericExpression = ""
         numericExpressionTooLong = false
-        guard draft.count + engine.state().preedit.count < 4_000 else { NSSound.beep(); return true }
-        if language == .zh {
+        guard draft.count + (language == .ko ? hangul.composingText.count : engine.state().preedit.count) < 4_000 else { NSSound.beep(); return true }
+        if language == .zh || language == .ja {
             guard engine.available else { model.translation.invalidate(message: Localizer.format("拼音引擎未就绪，请重新安装%@。", Brand.name)); reposition(); return false }
             let current = engine.state()
             if !current.preedit.isEmpty, characters == " " { choose(model.selected); return true }
@@ -408,18 +512,18 @@ final class GuyiInputController: IMKInputController {
                 return true
             }
             if let scalar = characters.unicodeScalars.first, characters.unicodeScalars.count == 1,
-               (CharacterSet.lowercaseLetters.contains(scalar) && scalar.isASCII || characters == "'") {
+               ((CharacterSet.letters.contains(scalar) && scalar.isASCII && (language == .ja || CharacterSet.lowercaseLetters.contains(scalar))) ||
+                characters == "'") {
                 _ = engine.key(Int32(scalar.value))
                 draft += engine.commit()
             } else {
                 settlePinyin()
                 let preceding = draft.last ?? precedingClientCharacter()
-                draft += ChinesePunctuation.convert(characters, preceding: preceding)
+                draft += language == .zh ? ChinesePunctuation.convert(characters, preceding: preceding) : characters
                 if preferences.settings.sentenceComposition != true { commitOriginal(); return true }
             }
         } else {
             draft += characters
-            if preferences.settings.sentenceComposition == true { sentenceNeedsConfirmation = true }
             if preferences.settings.sentenceComposition != true, characters == " " { commitOriginal(); return true }
         }
         refresh()
@@ -432,6 +536,7 @@ final class GuyiInputController: IMKInputController {
     override func commitComposition(_ sender: Any!) { commitOriginal() }
 
     override func hidePalettes() {
+        if CapsLanguageSwitch.shared.keepingCandidatePanel, active, ownsCurrentInputSource { return }
         panel?.orderOut(nil)
         super.hidePalettes()
     }
@@ -457,17 +562,95 @@ final class GuyiInputController: IMKInputController {
         NSApp.orderFrontCharacterPalette(nil)
     }
 
-    private func cycleLanguage() {
-        commitOriginal()
-        language = language == .zh ? .en : (language == .en ? .id : .zh)
-        preferences.inputLanguage = language
-        model.language = language
-        model.selectedOutput = language
-        model.translation.invalidate(message: "已切换到 \(language.title) · 开始输入")
-        reposition(showEmpty: true)
+    private func cycleLanguage(showIdlePanel: Bool = true) {
+        let modes = Language.inputModes
+        let current = modes.firstIndex(of: language) ?? 0
+        switchInputLanguage(modes[(current + 1) % modes.count], showIdlePanel: showIdlePanel)
+    }
+    private func switchInputLanguage(_ next: Language, showIdlePanel: Bool = true) {
+        guard Language.inputModes.contains(next), language != next else { return }
+        settleInputComposition()
+        language = next
+        preferences.inputLanguage = next
+        _ = engine.configure(language: next,
+            learning: preferences.settings.learnInput && !IsSecureEventInputEnabled())
+        model.language = next
+        model.translationSource = next
+        model.selectedOutput = next
+        if draft.isEmpty {
+            model.translation.invalidate(message: Localizer.format("已切换到%@ · 开始输入", next.title))
+            if showIdlePanel { reposition(showEmpty: true) }
+            else { panel?.orderOut(nil) }
+        } else {
+            refresh()
+        }
+    }
+    func toggleCapsLanguage() -> Bool {
+        guard active, !bypassClient, ownsCurrentInputSource else { return false }
+        let indicatorCaret = currentIndicatorCaret()
+        switchInputLanguage(language == .en ? preferences.lastNonEnglishInputLanguage : .en,
+                            showIdlePanel: false)
+        if let indicatorCaret {
+            InputLanguageIndicator.shared.show(language, near: indicatorCaret,
+                                               avoiding: panel?.isVisible == true ? panel?.frame : nil,
+                                               accent: CandidateTheme(settings: preferences.settings).accent)
+        }
+        return true
+    }
+
+    private func currentIndicatorCaret() -> NSRect? {
+        guard let client = inputClient, let sessionHostPID,
+              let mainScreenTop = NSScreen.screens.first?.frame.maxY else { return nil }
+        let hostWindows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
+            .filter { $0[kCGWindowOwnerPID as String] as? pid_t == sessionHostPID &&
+                      $0[kCGWindowLayer as String] as? Int == 0 }
+            .compactMap { ($0[kCGWindowBounds as String] as? [String: Any])
+                .flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } }
+            .map { NSRect(x: $0.minX, y: mainScreenTop - $0.maxY, width: $0.width, height: $0.height) }
+        func plausible(_ rect: NSRect) -> Bool {
+            CandidatePlacement.validCaret(rect) &&
+                NSScreen.screens.contains(where: { $0.frame.intersects(rect) }) &&
+                hostWindows.contains(where: { $0.insetBy(dx: -8, dy: -8).intersects(rect) })
+        }
+        let selected = client.selectedRange()
+        if selected.location != NSNotFound {
+            var actual = NSRange(location: NSNotFound, length: 0)
+            let rect = client.firstRect(forCharacterRange: NSRange(location: selected.location, length: 0), actualRange: &actual)
+            if plausible(rect) {
+                return rect
+            }
+        }
+        if ["com.googlecode.iterm2", "com.apple.Terminal"].contains(client.bundleIdentifier() ?? "") {
+            var line = NSRect.zero
+            _ = client.attributes(forCharacterIndex: 0, lineHeightRectangle: &line)
+            if plausible(line) {
+                return line
+            }
+        }
+        return nil
     }
     private func choose(_ index: Int) {
         guard model.candidates.indices.contains(index) else { return }
+        let candidate = model.candidates[index]
+        if emojiCandidates.contains(candidate) {
+            if language == .zh || language == .ja {
+                engine.clear()
+                draft += candidate
+            } else {
+                if language == .ko { hangul.cancel() }
+                draft = candidate
+            }
+            if preferences.settings.sentenceComposition == true { refresh() }
+            else { commitOriginal() }
+            return
+        }
+        if language == .en || language == .id { commitOriginal(); return }
+        if language == .ko {
+            draft += hangul.commit()
+            if preferences.settings.sentenceComposition == true { refresh() }
+            else { commitOriginal() }
+            return
+        }
         let code = engine.rawInput
         if index < model.candidates.count, hotwordCandidates.contains(model.candidates[index]) {
             let chosen = model.candidates[index]
@@ -481,7 +664,9 @@ final class GuyiInputController: IMKInputController {
         engine.select(engineIndex)
         let committed = engine.commit()
         draft += committed
-        if !committed.isEmpty { learnChosenPhrase(code, text: committed) }
+        if !committed.isEmpty {
+            learnChosenPhrase(LearnedPhrases.consumedCode(code, remaining: engine.rawInput), text: committed)
+        }
         if preferences.settings.sentenceComposition != true, engine.state().preedit.isEmpty {
             commitOriginal()
             return
@@ -498,8 +683,14 @@ final class GuyiInputController: IMKInputController {
                 model.selected = index
                 model.candidateStart = index
                 model.selectedOutput = language
+                if emojiCandidates.contains(model.candidates[index]) {
+                    model.original = (language == .zh || language == .ja ? draft : "") + model.candidates[index]
+                    updateTranslationSource()
+                    translate(immediate: false)
+                }
                 if hotwordCandidates.contains(model.candidates[index]) {
                     model.original = draft + model.candidates[index]
+                    updateTranslationSource()
                     translate(immediate: false)
                 }
                 return
@@ -531,8 +722,14 @@ final class GuyiInputController: IMKInputController {
         model.selected = next
         model.revealSelectedCandidate()
         model.selectedOutput = language
+        if emojiCandidates.contains(model.candidates[next]) {
+            model.original = (language == .zh || language == .ja ? draft : "") + model.candidates[next]
+            updateTranslationSource()
+            translate(immediate: false)
+        }
         if hotwordCandidates.contains(model.candidates[next]) {
             model.original = draft + model.candidates[next]
+            updateTranslationSource()
             translate(immediate: false)
         }
     }
@@ -541,23 +738,53 @@ final class GuyiInputController: IMKInputController {
         if !state.preedit.isEmpty {
             if model.candidates.indices.contains(model.selected), hotwordCandidates.contains(model.candidates[model.selected]) {
                 let chosen = model.candidates[model.selected]
-                learnChosenPhrase(engine.rawInput, text: chosen)
+                if language == .zh { learnChosenPhrase(engine.rawInput, text: chosen) }
                 engine.clear()
                 draft += chosen
             } else {
+                let code = engine.rawInput
                 let committed = engine.finish()
-                draft += committed.isEmpty ? state.preview : committed
+                let chosen = committed.isEmpty ? state.preview : committed
+                draft += chosen
+                if language == .zh, !chosen.isEmpty { learnChosenPhrase(code, text: chosen) }
             }
         }
+    }
+    private func settleInputComposition() {
+        if language == .ko { draft += hangul.commit() }
+        else if language == .zh || language == .ja { settlePinyin() }
+    }
+    private func handleHangul(event: NSEvent, characters: String?) -> Bool {
+        if event.keyCode == 51 {
+            if hangul.backspace() != nil { refresh(); return true }
+            if !draft.isEmpty { draft.removeLast(); refresh(); return true }
+            return false
+        }
+        guard event.keyCode != 53, ![36, 76, 48, 115, 116, 117, 119, 121, 123, 124, 125, 126].contains(event.keyCode) else { return false }
+        if let characters, characters.count == 1, let character = characters.first,
+           let update = hangul.input(character) {
+            draft += update.committed
+            refresh()
+            return true
+        }
+        if hangul.hasComposition { draft += hangul.commit() }
+        if let characters, !characters.isEmpty, !characters.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+            if characters == " " {
+                if !draft.isEmpty { commitOriginal() }
+                else { inputClient?.insertText(" ", replacementRange: NSRange(location: NSNotFound, length: 0)) }
+                return true
+            }
+            if !draft.isEmpty { commitOriginal() }
+        }
+        return false
     }
     private func refresh() {
         model.themeSettings = preferences.settings
         guard !bypassClient else { clear(marked: false); return }
         guard active, ownsCurrentInputSource else { clear(marked: false); return }
         if !model.calculationExpression.isEmpty { reposition(); return }
-        model.showPinyin = preferences.settings.showPinyin == true
+        model.showPinyin = language == .zh && preferences.settings.showPinyin == true
         model.sentenceMode = preferences.settings.sentenceComposition == true
-        model.awaitingConfirmation = model.sentenceMode && sentenceNeedsConfirmation
         if model.clipboardMode {
             model.enabledLanguages = preferences.settings.selectionLanguages ?? [.en, .id]
             if preferences.settings.translateClipboard == false && preferences.settings.translateSelection == false { clear(marked: false) }
@@ -568,13 +795,17 @@ final class GuyiInputController: IMKInputController {
         resetLesson()
         model.selectedOutput = language
         model.enabledLanguages = preferences.settings.enabledLanguages ?? [.zh, .en, .id]
-        let state = engine.state()
+        let state: (preedit: String, preview: String, selected: Int, candidates: [String]) =
+            language == .ko ? (hangul.composingText, hangul.composingText, 0,
+                               hangul.hasComposition ? [hangul.composingText] : []) : engine.state()
         model.preedit = state.preedit
         model.candidates = state.candidates
-        candidateEngineIndices = state.candidates.indices.map { Optional($0) }
-        model.page = engine.page
-        model.lastPage = engine.lastPage
+        candidateEngineIndices = language == .ko ? state.candidates.map { _ in nil } :
+            state.candidates.indices.map { Optional($0) }
+        model.page = language == .ko ? 0 : engine.page
+        model.lastPage = language == .ko || engine.lastPage
         hotwordCandidates = []
+        emojiCandidates = []
         if preferences.settings.hotwordsEnabled != false, language == .zh {
             let matches = HotwordStore.shared.matches(state.preedit).filter { !state.candidates.contains($0) }
             if let hotword = matches.first {
@@ -583,20 +814,31 @@ final class GuyiInputController: IMKInputController {
                 hotwordCandidates.insert(hotword)
             }
         }
-        if preferences.settings.learnInput, language == .zh, engine.page == 0 {
+        if preferences.settings.learnInput, !IsSecureEventInputEnabled(), language == .zh, engine.page == 0 {
             let learned = UserPhraseStore.shared.matches(state.preedit)
             for text in learned.reversed() {
                 if let index = model.candidates.firstIndex(of: text) { model.candidates.remove(at: index);candidateEngineIndices.remove(at: index) }
                 model.candidates.insert(text, at: 0);candidateEngineIndices.insert(nil, at: 0);hotwordCandidates.insert(text)
             }
         }
-        if language == .zh, engine.page == 0, preferences.settings.emojiCandidates != false {
-            let emoji = EmojiCandidates.matches(state.preedit).filter { !model.candidates.contains($0) }
-            let start = min(2, model.candidates.count)
+        if preferences.settings.emojiCandidates != false, language != .auto,
+           (language != .zh && language != .ja || engine.page == 0) {
+            let trigger: String = switch language {
+            case .zh, .ja: engine.rawInput
+            case .ko: draft + hangul.composingText
+            default: draft
+            }
+            let emoji = EmojiCandidates.matches(trigger, language: language)
+                .filter { !model.candidates.contains($0) }
+            if !emoji.isEmpty && (language == .en || language == .id) {
+                model.candidates = [draft]
+                candidateEngineIndices = [nil]
+            }
+            let start = min(language == .zh ? 2 : 1, model.candidates.count)
             for (offset, text) in emoji.enumerated() {
                 model.candidates.insert(text, at: start + offset)
                 candidateEngineIndices.insert(nil, at: start + offset)
-                hotwordCandidates.insert(text)
+                emojiCandidates.insert(text)
             }
         }
         if language == .zh, engine.page == 0, let english = MixedInputCandidates.preferredEnglish(engine.rawInput) {
@@ -609,10 +851,16 @@ final class GuyiInputController: IMKInputController {
         model.selected = candidateEngineIndices.firstIndex(where: { $0 == state.selected }) ?? 0
         if !candidateEngineIndices.isEmpty, candidateEngineIndices[0] == nil, state.selected == 0 { model.selected = 0 }
         model.revealSelectedCandidate()
-        model.original = draft + (model.candidates.indices.contains(model.selected) && hotwordCandidates.contains(model.candidates[model.selected]) ? model.candidates[model.selected] : (state.preview.isEmpty ? state.preedit : state.preview))
+        if model.candidates.indices.contains(model.selected), emojiCandidates.contains(model.candidates[model.selected]) {
+            model.original = (language == .zh || language == .ja ? draft : "") + model.candidates[model.selected]
+        } else {
+            model.original = draft + (language == .ko ? hangul.composingText :
+                (model.candidates.indices.contains(model.selected) && hotwordCandidates.contains(model.candidates[model.selected]) ? model.candidates[model.selected] : (state.preview.isEmpty ? state.preedit : state.preview)))
+        }
         model.language = language
+        updateTranslationSource()
         let marked = draft + state.preedit
-        inlineCursor = draft.utf16.count + engine.cursor(in: state.preedit)
+        inlineCursor = draft.utf16.count + (language == .ko ? state.preedit.utf16.count : engine.cursor(in: state.preedit))
         let attributed = NSMutableAttributedString(string: marked)
         let range = NSRange(location: 0, length: marked.utf16.count)
         if let attributes = mark(forStyle: kTSMHiliteSelectedRawText, at: range) as? [NSAttributedString.Key: Any] {
@@ -631,12 +879,17 @@ final class GuyiInputController: IMKInputController {
         translate(immediate: false)
         reposition()
     }
-    private func translate(immediate: Bool) {
-        guard !bypassClient else { model.translation.invalidate(); return }
+    private func translate(immediate: Bool, forceRefresh: Bool = false) {
+        guard !bypassClient, !TranslationPrivacy.protectedContext() else { model.translation.invalidate(); return }
         var settings = preferences.settings
-        settings.source = model.clipboardMode ? .auto : language
-        if model.clipboardMode { settings.enabledLanguages = model.enabledLanguages; settings.translateWholeSelection = true }
-        model.translation.update(text: model.original, composing: false, settings: settings, apiKey: preferences.apiKey, immediate: immediate)
+        settings.source = model.clipboardMode ? .auto : model.translationSource
+        settings.enabledLanguages = model.requestedLanguages
+        if model.clipboardMode { settings.translateWholeSelection = true }
+        model.translation.update(text: model.original, composing: false, settings: settings,
+                                 apiKey: preferences.apiKey, immediate: immediate, forceRefresh: forceRefresh)
+    }
+    private func updateTranslationSource() {
+        model.translationSource = MixedInputCandidates.translationSource(for: model.original, inputLanguage: language)
     }
     private func clearShortcutHint() {
         guard waitingShortcutLanguage != nil else { return }
@@ -645,7 +898,7 @@ final class GuyiInputController: IMKInputController {
     }
     private func insertTranslation(_ language: Language) {
         guard !bypassClient, active, ownsCurrentInputSource else { return }
-        guard active, model.enabledLanguages.contains(language), let translated = model.translation.selectableText(for: language), !translated.isEmpty,
+        guard active, model.requestedLanguages.contains(language), let translated = model.translation.selectableText(for: language), !translated.isEmpty,
               model.translation.currentText == model.original else { NSSound.beep(); return }
         let text = InsertionText.singleLine(translated)
         _ = engine.finish()
@@ -668,7 +921,7 @@ final class GuyiInputController: IMKInputController {
     }
     private func commitOriginal() {
         guard !bypassClient, active, ownsCurrentInputSource else { clear(marked: false); return }
-        settlePinyin()
+        settleInputComposition()
         let original = draft
         if !original.isEmpty {
             inputClient?.insertText(InsertionText.singleLine(original), replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -694,6 +947,7 @@ final class GuyiInputController: IMKInputController {
         caretUpdateTask = nil
         compositionRect = .zero
         model.clipboardMode = false
+        model.restoreCollapsedLanguages()
         clipboardAnchor = nil
         clipboardMouseCount = nil
         model.calculationExpression = ""
@@ -702,14 +956,14 @@ final class GuyiInputController: IMKInputController {
         numericExpression = ""
         numericExpressionTooLong = false
         engine.clear()
+        hangul.cancel()
         draft = ""
-        sentenceNeedsConfirmation = false
-        model.awaitingConfirmation = false
         inlineCursor = 0
         caret = .zero
         model.original = ""
         model.preedit = ""
         model.candidates = []
+        emojiCandidates.removeAll()
         model.translation.invalidate()
         resetLesson()
         if marked && !bypassClient && active && ownsCurrentInputSource { inputClient?.setMarkedText(NSAttributedString(string: ""), selectionRange: NSRange(location: 0, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0)) }
@@ -720,19 +974,16 @@ final class GuyiInputController: IMKInputController {
             panel?.orderOut(nil)
             return
         }
-        guard !ScreenshotService.shared.capturing else { panel?.orderOut(nil); return }
         guard active, showEmpty || !model.original.isEmpty else { panel?.orderOut(nil); return }
         if panel == nil { panel = CandidatePanel(model: model) }
         if caret == .zero { updateCaret() }
         panel?.present(near: caret, avoiding: compositionRect == .zero ? nil : compositionRect)
     }
-    func prepareExternalSourceSwitch() { if ownsCurrentInputSource { commitOriginal() } }
     func hideCandidatePanel() { panel?.orderOut(nil) }
     func hideIfClientInactive() {
         if sessionHostPID != NSWorkspace.shared.frontmostApplication?.processIdentifier {
             panel?.orderOut(nil)
             model.translation.invalidate()
-            resetLesson()
         }
     }
     private func updateCaret() {
@@ -834,8 +1085,8 @@ final class GuyiInputController: IMKInputController {
     private func learnChosenPhrase(_ code: String, text: String) {
         guard preferences.settings.learnInput, language == .zh, !IsSecureEventInputEnabled() else { lastChosenPhrase = nil; return }
         let normalized = LearnedPhrases.normalized(code)
-        guard LearnedPhrases.valid(normalized, text: text) else { lastChosenPhrase = nil; return }
-        UserPhraseStore.shared.record(normalized, text: text)
+        guard LearnedPhrases.validObservation(normalized, text: text) else { lastChosenPhrase = nil; return }
+        if LearnedPhrases.valid(normalized, text: text) { UserPhraseStore.shared.record(normalized, text: text) }
         let now = Date(), clicks = mouseDownCount
         if let previous = lastChosenPhrase, previous.clicks == clicks, now.timeIntervalSince(previous.time) < 8,
            LearnedPhrases.valid(previous.code + normalized, text: previous.text + text) {
@@ -844,7 +1095,7 @@ final class GuyiInputController: IMKInputController {
         lastChosenPhrase = (normalized, text, now, clicks)
     }
     private func showCalculation(_ expression: String) {
-        let tooLong = numericExpressionTooLong
+        let tooLong = numericExpressionTooLong && expression == numericExpression
         inputClient?.insertText("=", replacementRange: NSRange(location: NSNotFound, length: 0))
         rememberCommittedText("=")
         numericExpression = ""
@@ -876,6 +1127,19 @@ final class GuyiInputController: IMKInputController {
         inputClient?.insertText(result, replacementRange: NSRange(location: NSNotFound, length: 0))
         rememberCommittedText(result)
         clear(marked: false)
+        numericExpression = Calculator.accepts(result) ? result : ""
+    }
+    private func calculationExpressionAtCaret() -> String? {
+        guard let client = inputClient, active, ownsCurrentInputSource,
+              !["com.googlecode.iterm2", "com.apple.Terminal"].contains(client.bundleIdentifier() ?? "") else { return nil }
+        let selected = client.selectedRange()
+        guard selected.length == 0, selected.location != NSNotFound, selected.location > 0 else { return nil }
+        let range = NSRange(location: selected.location - min(selected.location, 257),
+                            length: min(selected.location, 257))
+        var actual = NSRange(location: NSNotFound, length: 0)
+        guard let text = client.string(from: range, actualRange: &actual), actual == range else { return nil }
+        let expression = Calculator.trailingExpression(in: text)
+        return expression.isEmpty ? nil : expression
     }
     private func rememberCommittedText(_ text: String) {
         if !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isLetter }) {
@@ -930,13 +1194,26 @@ final class GuyiInputController: IMKInputController {
         pendingClipboard = nil
         observedSelection = nil
         observedSelectionText = nil
-        guard active, !bypassClient, preferences.settings.translateClipboard != false || preferences.settings.translateSelection != false else { return }
+        guard active, !bypassClient, !IsSecureEventInputEnabled(),
+              preferences.settings.translateClipboard != false || preferences.settings.translateSelection != false else { return }
         clipboardChange = NSPasteboard.general.changeCount
         clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkClipboard() }
         }
     }
     private func checkClipboard() {
+        if IsSecureEventInputEnabled() {
+            clipboardChange = NSPasteboard.general.changeCount
+            pendingClipboard = nil
+            if model.clipboardMode { clear(marked: false) }
+            return
+        }
+        if preferences.selectionTranslationPaused {
+            clipboardChange = NSPasteboard.general.changeCount
+            pendingClipboard = nil
+            if model.clipboardMode { clear(marked: false) }
+            return
+        }
         // Selection outside editable text belongs to the app-wide AX service.
         // Avoid duplicate popovers where the host exposes AX selection as well.
         if AXIsProcessTrusted() || SelectionTranslationService.shared.isShowing { return }
@@ -1008,6 +1285,7 @@ final class GuyiInputController: IMKInputController {
         caret = .zero
         resetLesson()
         model.clipboardMode = true
+        model.restoreCollapsedLanguages()
         clipboardMouseCount = mouseDownCount
         let pointer = NSEvent.mouseLocation
         clipboardAnchor = NSRect(x: pointer.x, y: pointer.y - 9, width: 1, height: 18)
@@ -1094,7 +1372,7 @@ final class GuyiInputController: IMKInputController {
     }
 
     private func auditLifecycle(_ stage: String) {
-        guard UserDefaults.standard.bool(forKey: "diagnoseInputLifecycle") else { return }
+        guard UserDefaults.standard.bool(forKey: "diagnoseInputLifecycle") || InputSourceDiagnostics.enabled else { return }
         let foreground = NSWorkspace.shared.frontmostApplication
         let clientBundle = stage == "activate" ? (inputClient?.bundleIdentifier() ?? "unavailable") : "not-queried"
         let foregroundBundle = foreground?.bundleIdentifier ?? "unavailable"
@@ -1102,4 +1380,5 @@ final class GuyiInputController: IMKInputController {
         Logger(subsystem: "app.guyi.inputmethod.Guyi", category: "InputLifecycle").notice(
             "stage=\(stage, privacy: .public) active=\(self.active) current=\(current) hostPID=\(self.sessionHostPID ?? -1) foregroundPID=\(foreground?.processIdentifier ?? -1) clientBundle=\(clientBundle, privacy: .public) foregroundBundle=\(foregroundBundle, privacy: .public)")
     }
+
 }

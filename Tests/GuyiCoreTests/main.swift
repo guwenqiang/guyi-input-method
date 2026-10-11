@@ -25,6 +25,27 @@ actor StubTranslator: Translating {
     }
 }
 
+actor TargetedTranslator: Translating {
+    private(set) var calls: [[Language]] = []
+    func translate(_ text: String, settings: TranslationSettings, apiKey: String) async throws -> Translation {
+        let targets = settings.translationTargets
+        calls.append(targets)
+        try await Task.sleep(for: .milliseconds(targets.contains(.id) ? 140 : 20))
+        return Translation(source: .zh, zh: text,
+                           en: targets.contains(.en) ? "English result" : "",
+                           id: targets.contains(.id) ? "Hasil Indonesia" : "", note: "")
+    }
+}
+
+actor ModelAwareTranslator: Translating {
+    private(set) var calls = 0
+    func translate(_ text: String, settings: TranslationSettings, apiKey: String) async throws -> Translation {
+        calls += 1
+        return Translation(source: .zh, zh: text, en: settings.model == "model-b" ? "Model B" : "Model A",
+                           id: "", note: "")
+    }
+}
+
 final class MockURLProtocol: URLProtocol {
     static var status = 200
     static var data = Data()
@@ -51,6 +72,29 @@ struct StagedTranslator: StreamingTranslating {
     }
 }
 
+actor StreamingTargetTranslator: StreamingTranslating {
+    private(set) var calls: [[Language]] = []
+    func translate(_ text: String, settings: TranslationSettings, apiKey: String) async throws -> Translation {
+        try await stream(text, settings: settings, apiKey: apiKey) { _ in }
+    }
+    func stream(_ text: String, settings: TranslationSettings, apiKey: String,
+                progress: @escaping @Sendable ([String: String]) async -> Void) async throws -> Translation {
+        let targets = settings.translationTargets
+        calls.append(targets)
+        if targets.contains(.en) {
+            await progress(["en": "English result", "_ready_en": "1"])
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        if targets.contains(.id) {
+            await progress(["id": "Hasil Indonesia", "_ready_id": "1"])
+            try await Task.sleep(for: .milliseconds(60))
+        }
+        return Translation(source: .zh, zh: text,
+                           en: targets.contains(.en) ? "English result" : "",
+                           id: targets.contains(.id) ? "Hasil Indonesia" : "", note: "")
+    }
+}
+
 @main
 struct Tests {
     @MainActor static func main() async throws {
@@ -69,22 +113,16 @@ struct Tests {
         try check(EmojiCandidates.matches("ha ha").contains("😂"), "Pinyin haha offers a laughing emoji")
         try check(EmojiCandidates.matches("xie xie").contains("🙏"), "Pinyin emoji matching normalizes syllable spaces")
         try check(EmojiCandidates.matches("unknownword").isEmpty, "Unmatched Pinyin does not inject unrelated emoji")
-        var scrolling = ScrollStepQueue()
-        scrolling.add(-950)
-        var forwarded = 0, steps = 0
-        while let step = scrolling.take(viewportHeight: 300) {
-            try check(abs(step) <= 100, "Fast scrolling retains at least two thirds overlap")
-            forwarded += Int(step); steps += 1
-        }
-        try check(forwarded == -950 && steps == 10, "Queued fast gesture is drained without losing distance")
-        scrolling.add(-90); scrolling.add(40)
-        try check(scrolling.take(viewportHeight: 300) == -50 && scrolling.take(viewportHeight: 300) == nil, "Direction reversal coalesces pending movement")
-        scrolling.add(.infinity)
-        try check(scrolling.take(viewportHeight: 300) == nil, "Nonfinite scroll events are ignored")
+        try check(EmojiCandidates.matches("smile", language: .en).contains("😊"), "English word offers an emoji")
+        try check(EmojiCandidates.matches("terima kasih", language: .id).contains("🙏"), "Indonesian phrase offers an emoji")
+        try check(EmojiCandidates.matches("arigatou", language: .ja).contains("🙏"), "Japanese romaji offers an emoji")
+        try check(EmojiCandidates.matches("안녕", language: .ko).contains("👋"), "Korean word offers an emoji")
+        try check(EmojiCandidates.matches("EPSQPAZN7", language: .en).isEmpty, "Opaque IDs do not offer emoji")
         try runSelectionTranslationTests()
         try await runPrivacyRegressionTests()
         try runShortcutTests()
         try runLearnedPhraseTests()
+        try runHangulInputTests()
         try runProviderDraftTests()
         try runCalculatorTests()
         try check(InputSafety.candidatePageDirection("=", language: .zh, hasPreedit: true) == true, "Equals pages forward during Pinyin composition")
@@ -101,10 +139,12 @@ struct Tests {
                   "Existing provider settings retain Responses protocol")
         let cloudKey = TranslationCache.key(text: "provider-isolation", settings: cloudSettings)
         cloudSettings.apiProtocol = .anthropic
-        try check(TranslationCache.key(text: "provider-isolation", settings: cloudSettings) != cloudKey,
-                  "Provider protocol translation caches are isolated")
+        try check(TranslationCache.key(text: "provider-isolation", settings: cloudSettings) == cloudKey,
+                  "Provider protocol changes reuse the same translation cache")
         try check(Localizer.languageCode(preference: "system", systemLanguages: ["zh-Hans-CN"]) == "zh-Hans", "Chinese system UI language")
         try check(Localizer.languageCode(preference: "system", systemLanguages: ["id-ID"]) == "id", "Indonesian system UI language")
+        try check(Localizer.languageCode(preference: "system", systemLanguages: ["ja-JP"]) == "ja", "Japanese system UI language")
+        try check(Localizer.languageCode(preference: "system", systemLanguages: ["ko-KR"]) == "ko", "Korean system UI language")
         try check(Localizer.languageCode(preference: "en", systemLanguages: ["zh-Hans-CN"]) == "en", "Manual UI language overrides system")
         try check(Localizer.languageCode(preference: "system", systemLanguages: ["fr-FR"]) == "en", "Unsupported system language falls back to English")
         try await runCacheTests()
@@ -181,8 +221,19 @@ struct Tests {
         try check(!InputSafety.spaceCommitsSentence(language: .id, sentenceMode: true, hasPreedit: false, draft: "selamat"), "Indonesian spaces stay word separators")
         try check(!InputSafety.spaceCommitsSentence(language: .zh, sentenceMode: false, hasPreedit: false, draft: "你好"), "Normal mode unaffected by sentence-space rule")
         try check(!InputSafety.bypassInputMethod(bundleIdentifier: "com.apple.Terminal") && !InputSafety.bypassInputMethod(bundleIdentifier: "com.googlecode.iterm2"), "Terminals retain Chinese input support")
+        try check(InputSafety.capsUsesSystemInputSource(bundleIdentifier: "com.google.Chrome"), "Chrome Caps uses its observed system input-source switch")
+        try check(!InputSafety.capsUsesSystemInputSource(bundleIdentifier: "com.apple.Safari") &&
+                  !InputSafety.capsUsesSystemInputSource(bundleIdentifier: "com.tencent.WeWorkMac"),
+                  "Other apps keep GuYi internal Caps switching")
+        try check(InputSafety.englishText("A", capsLock: true, shift: false) == "a", "Internal English mode ignores Caps Lock for lowercase letters")
+        try check(InputSafety.englishText("a", capsLock: true, shift: true) == "A", "Shift still produces uppercase English")
+        try check(InputSafety.englishText("3.14", capsLock: true, shift: false) == "3.14", "Caps normalization leaves numbers and punctuation unchanged")
         try check(!InputSafety.bypassInputMethod(bundleIdentifier: "com.apple.TextEdit"), "Other apps retain input support")
         try check(InputSafety.bypassInputMethod(bundleIdentifier: "app.guyi.inputmethod.Guyi"), "GuYi settings are not composed or translated by their own backend")
+        try check(InputSafety.allowsLocalComposition(bundleIdentifier: "com.googlecode.iterm2"),
+                  "Global Secure Input cannot disable local Pinyin in a regular app")
+        try check(!InputSafety.allowsLocalComposition(bundleIdentifier: "com.1password.1password"),
+                  "Protected apps still bypass local composition")
         try check(!InputSafety.bypassInputMethod(bundleIdentifier: "com.tencent.xinWeChat") && !InputSafety.bypassInputMethod(bundleIdentifier: "com.tencent.WeWorkMac"),
                   "WeChat and WeCom are not bypassed as a workaround")
         let request = try OpenAITranslator().request("你好", settings: settings, apiKey: "test-not-a-real-key")
@@ -219,6 +270,71 @@ struct Tests {
         settings = TranslationSettings()
         let roundTrip = try JSONDecoder().decode(TranslationSettings.self, from: JSONEncoder().encode(settings))
         try check(roundTrip == settings, "Persist all settings")
+        let importHome = FileManager.default.temporaryDirectory.appendingPathComponent("guyi-import-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: importHome.appendingPathComponent(".codex"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: importHome.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: importHome) }
+        let codexAuth = importHome.appendingPathComponent(".codex/auth.json")
+        let claudeSettings = importHome.appendingPathComponent(".claude/settings.json")
+        try Data(#"{"auth_mode":"apikey","OPENAI_API_KEY":"test-openai-key"}"#.utf8).write(to: codexAuth)
+        var importSettings = TranslationSettings()
+        importSettings.endpoint = "https://other.example/v1"
+        importSettings.candidateTheme = "light"
+        let codexImport = try LocalServiceImport.load(.codex, current: importSettings, home: importHome)
+        try check(codexImport.settings.endpoint == "https://api.openai.com/v1" &&
+                  codexImport.settings.effectiveAPIProtocol == .responses &&
+                  codexImport.settings.model == TranslationSettings().model &&
+                  codexImport.settings.candidateTheme == "light" && codexImport.key == "test-openai-key",
+                  "Codex API-key import uses the official endpoint and preserves unrelated preferences")
+        let codexConfig = importHome.appendingPathComponent(".codex/config.toml")
+        try Data("model_provider = \"Gateway\"\nmodel = \"gpt-translation\"\n[model_providers.Gateway]\nbase_url = \"https://gateway.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n".utf8)
+            .write(to: codexConfig)
+        let gatewayImport = try LocalServiceImport.load(.codex, current: importSettings, home: importHome)
+        try check(gatewayImport.settings.endpoint == "https://gateway.example/v1" &&
+                  gatewayImport.settings.model == "gpt-translation" && gatewayImport.key == "test-openai-key",
+                  "Codex import pairs its selected gateway and model with the API key")
+        try Data("model_provider = \"Gateway\"\nmodel = \"gpt-translation\"\n[model_providers.Gateway]\nbase_url = \"https://gateway.example\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n".utf8)
+            .write(to: codexConfig)
+        let rootImport = try LocalServiceImport.load(.codex, current: importSettings, home: importHome)
+        try check(rootImport.settings.endpoint == "https://gateway.example/v1",
+                  "A provider root URL gains one /v1 API path")
+        try Data("model_provider = \"Gateway\"\nmodel = \"gpt-translation\"\n[model_providers.Gateway]\nbase_url = \"https://gateway.example/custom/v2\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n".utf8)
+            .write(to: codexConfig)
+        let versionedImport = try LocalServiceImport.load(.codex, current: importSettings, home: importHome)
+        try check(versionedImport.settings.endpoint == "https://gateway.example/custom/v2",
+                  "A provider version path is preserved without appending /v1")
+        try Data("model_provider = \"Gateway\"\n[model_providers.Gateway]\nbase_url = \"https://gateway.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n".utf8)
+            .write(to: codexConfig)
+        do { _ = try LocalServiceImport.load(.codex, current: importSettings, home: importHome); throw Failure.check("Unpaired provider key") }
+        catch LocalServiceImport.ImportError.unsupportedAuthentication { print("PASS · Custom provider without OpenAI authentication cannot borrow a Codex key") }
+        try FileManager.default.removeItem(at: codexConfig)
+        try Data(#"{"auth_mode":"chatgpt","OPENAI_API_KEY":"test-openai-key"}"#.utf8).write(to: codexAuth)
+        do { _ = try LocalServiceImport.load(.codex, current: importSettings, home: importHome); throw Failure.check("OAuth import") }
+        catch LocalServiceImport.ImportError.unsupportedAuthentication { print("PASS · Codex subscription login is not imported") }
+        try FileManager.default.removeItem(at: codexAuth)
+        try Data(#"{"auth_mode":"apikey","OPENAI_API_KEY":"test-openai-key"}"#.utf8)
+            .write(to: importHome.appendingPathComponent("auth-target.json"))
+        try FileManager.default.createSymbolicLink(at: codexAuth,
+                                                   withDestinationURL: importHome.appendingPathComponent("auth-target.json"))
+        do { _ = try LocalServiceImport.load(.codex, current: importSettings, home: importHome); throw Failure.check("Symlink import") }
+        catch LocalServiceImport.ImportError.invalidFile { print("PASS · Symlinked credential file is rejected") }
+        try Data(#"{"env":{"ANTHROPIC_API_KEY":"test-anthropic-key","ANTHROPIC_BASE_URL":"https://gateway.example/v1"},"model":"sonnet"}"#.utf8)
+            .write(to: claudeSettings)
+        let claudeGateway = try LocalServiceImport.load(.claudeCode, current: importSettings, home: importHome)
+        try check(claudeGateway.settings.endpoint == "https://gateway.example/v1" &&
+                  claudeGateway.settings.model == "sonnet" && claudeGateway.key == "test-anthropic-key",
+                  "Claude import pairs an explicit gateway, model and API key")
+        try Data(#"{"env":{"ANTHROPIC_API_KEY":"test-anthropic-key","ANTHROPIC_BASE_URL":"http://gateway.example/v1"}}"#.utf8)
+            .write(to: claudeSettings)
+        let httpImport = try LocalServiceImport.load(.claudeCode, current: importSettings, home: importHome)
+        try check(httpImport.settings.endpoint == "http://gateway.example/v1" && httpImport.key == "test-anthropic-key",
+                  "Existing HTTP gateway can enter an unsaved draft with an unencrypted-connection warning")
+        try Data(#"{"env":{"ANTHROPIC_API_KEY":"test-anthropic-key"},"model":"sonnet"}"#.utf8).write(to: claudeSettings)
+        let claudeImport = try LocalServiceImport.load(.claudeCode, current: importSettings, home: importHome)
+        try check(claudeImport.settings.endpoint == "https://api.anthropic.com/v1" &&
+                  claudeImport.settings.effectiveAPIProtocol == .anthropic &&
+                  claudeImport.settings.model == "claude-haiku-4-5-20251001" &&
+                  claudeImport.key == "test-anthropic-key", "Claude API-key import rejects a CLI-only model alias")
         try check(InsertionText.singleLine("hello\r\nworld\u{1b}\t\u{2028}!") == "hello world!", "Strip newlines and terminal control characters")
 
         let configuration = URLSessionConfiguration.ephemeral
@@ -243,6 +359,94 @@ struct Tests {
         session.update(text: "new", composing: false, settings: settings, apiKey: "test", immediate: true)
         let afterCache = await stub.calls
         try check(beforeCache == afterCache && session.result?.zh == "new", "Memory cache avoids repeat request")
+        let refreshTranslator = TargetedTranslator()
+        let refreshSession = TranslationSession(translator: refreshTranslator, cache: TranslationCache())
+        var refreshSettings = TranslationSettings()
+        refreshSettings.source = .zh
+        refreshSettings.enabledLanguages = [.en]
+        refreshSession.update(text: "刷新测试", composing: false, settings: refreshSettings,
+                              apiKey: "test", immediate: true)
+        await refreshSession.waitForCurrentRequest()
+        refreshSession.update(text: "刷新测试", composing: false, settings: refreshSettings,
+                              apiKey: "test", immediate: true, forceRefresh: true)
+        try check(refreshSession.busy && refreshSession.selectableText(for: .en) == "English result",
+                  "Manual refresh keeps the completed translation visible while requesting again")
+        await refreshSession.waitForCurrentRequest()
+        let refreshCalls = await refreshTranslator.calls
+        try check(refreshCalls == [[.en], [.en]], "Manual refresh bypasses cached translation exactly once")
+        refreshSession.update(text: "刷新测试", composing: false, settings: refreshSettings,
+                              apiKey: "test", immediate: true)
+        let afterRefreshCalls = await refreshTranslator.calls
+        try check(afterRefreshCalls.count == 2, "Normal update still deduplicates after refresh")
+        let modelAware = ModelAwareTranslator()
+        let sharedModelCache = TranslationCache()
+        var modelA = TranslationSettings()
+        modelA.source = .zh; modelA.enabledLanguages = [.en]; modelA.model = "model-a"
+        let firstModel = TranslationSession(translator: modelAware, cache: sharedModelCache)
+        firstModel.update(text: "跨模型缓存测试", composing: false, settings: modelA, apiKey: "same-account", immediate: true)
+        await firstModel.waitForCurrentRequest()
+        var modelB = modelA
+        modelB.model = "model-b"; modelB.apiProtocol = .chatCompletions; modelB.plainJSONOutput = true
+        let secondModel = TranslationSession(translator: modelAware, cache: sharedModelCache)
+        secondModel.update(text: "跨模型缓存测试", composing: false, settings: modelB, apiKey: "same-account", immediate: true)
+        await secondModel.waitForCurrentRequest()
+        let beforeForcedRefresh = await modelAware.calls
+        try check(secondModel.result?.en == "Model A" && beforeForcedRefresh == 1,
+                  "Switching model, protocol and output format reuses one translation without a request")
+        secondModel.update(text: "跨模型缓存测试", composing: false, settings: modelB, apiKey: "same-account",
+                           immediate: true, forceRefresh: true)
+        await secondModel.waitForCurrentRequest()
+        let afterForcedRefresh = await modelAware.calls
+        try check(secondModel.result?.en == "Model B" && afterForcedRefresh == 2,
+                  "Manual refresh uses the selected model and replaces the shared cached translation")
+        let firstModelAgain = TranslationSession(translator: modelAware, cache: sharedModelCache)
+        firstModelAgain.update(text: "跨模型缓存测试", composing: false, settings: modelA,
+                               apiKey: "same-account", immediate: true)
+        await firstModelAgain.waitForCurrentRequest()
+        let afterModelReturn = await modelAware.calls
+        try check(firstModelAgain.result?.en == "Model B" && afterModelReturn == 2,
+                  "Returning to the earlier model sees the refreshed translation without a request")
+        let targeted = TargetedTranslator()
+        let targetSession = TranslationSession(translator: targeted, cache: TranslationCache())
+        var targetSettings = TranslationSettings()
+        targetSettings.source = .zh
+        targetSettings.enabledLanguages = [.en]
+        targetSettings.translationCacheDays = 0
+        targetSession.update(text: "测试句子", composing: false, settings: targetSettings, apiKey: "test", immediate: true)
+        await targetSession.waitForCurrentRequest()
+        try check(targetSession.selectableText(for: .en) == "English result", "First target completes independently")
+        targetSettings.enabledLanguages = [.en, .id]
+        targetSession.update(text: "测试句子", composing: false, settings: targetSettings, apiKey: "test", immediate: true)
+        try check(targetSession.busy && targetSession.selectableText(for: .en) == "English result",
+                  "Completed English stays selectable while Indonesian is added")
+        await targetSession.waitForCurrentRequest()
+        try check(targetSession.selectableText(for: .id) == "Hasil Indonesia" &&
+                  targetSession.selectableText(for: .en) == "English result",
+                  "Additional language merges without replacing completed translation")
+        let targetCalls = await targeted.calls
+        try check(targetCalls == [[.en], [.id]], "Expansion requests only the missing language")
+        targetSettings.enabledLanguages = [.en]
+        targetSession.update(text: "测试句子", composing: false, settings: targetSettings, apiKey: "test", immediate: true)
+        targetSettings.enabledLanguages = [.en, .id]
+        targetSession.update(text: "测试句子", composing: false, settings: targetSettings, apiKey: "test", immediate: true)
+        let afterReopenCalls = await targeted.calls
+        try check(afterReopenCalls.count == 2 && targetSession.selectableText(for: .id) == "Hasil Indonesia",
+                  "Folding and reopening completed targets does not spend more requests")
+        let sharedCache = TranslationCache()
+        let reuseTranslator = TargetedTranslator()
+        let initialReuse = TranslationSession(translator: reuseTranslator, cache: sharedCache)
+        var reuseSettings = TranslationSettings()
+        reuseSettings.source = .zh
+        reuseSettings.enabledLanguages = [.en, .id]
+        initialReuse.update(text: "复用语种", composing: false, settings: reuseSettings, apiKey: "test", immediate: true)
+        await initialReuse.waitForCurrentRequest()
+        let narrowerReuse = TranslationSession(translator: reuseTranslator, cache: sharedCache)
+        reuseSettings.enabledLanguages = [.id]
+        narrowerReuse.update(text: "复用语种", composing: false, settings: reuseSettings, apiKey: "test", immediate: true)
+        try check(narrowerReuse.selectableText(for: .id) == "Hasil Indonesia" && !narrowerReuse.busy,
+                  "A narrower target set reuses its completed language without a request")
+        let reuseCalls = await reuseTranslator.calls
+        try check(reuseCalls == [[.en, .id]], "Changing target visibility does not spend tokens on cached languages")
         session.update(text: "marked", composing: true, settings: settings, apiKey: "test")
         try await Task.sleep(nanoseconds: 250_000_000)
         let afterComposing = await stub.calls
@@ -334,10 +538,32 @@ struct Tests {
         settings.enabledLanguages = [.en, .id]
         staged.update(text: "staged", composing: false, settings: settings, apiKey: "test", immediate: true)
         try await Task.sleep(nanoseconds: 50_000_000)
-        try check(staged.selectableText(for: .en) == "Hello" && staged.result == nil && staged.selectableText(for: .id) == nil, "Finished English can commit while Indonesian is still pending")
+        try check(staged.selectableText(for: .en) == "Hello" && staged.result?.en == "Hello" && staged.selectableText(for: .id) == nil,
+                  "Finished streaming field is retained while other targets are pending: result=\(staged.result?.en ?? "nil")")
         settings.enabledLanguages = []
         staged.update(text: "staged", composing: false, settings: settings, apiKey: "test", immediate: true)
-        try check(staged.selectableText(for: .en) == nil && !staged.busy, "Collapsing all targets cancels early selectable output")
+        try check(!staged.busy, "Collapsing all targets cancels the pending request")
+        let progressive = StreamingTargetTranslator()
+        let progressiveSession = TranslationSession(translator: progressive, cache: TranslationCache())
+        settings.enabledLanguages = [.en]
+        progressiveSession.update(text: "流式句子", composing: false, settings: settings, apiKey: "test", immediate: true)
+        try await Task.sleep(for: .milliseconds(50))
+        try check(progressiveSession.busy && progressiveSession.selectableText(for: .en) == "English result",
+                  "English is usable before its stream closes")
+        settings.enabledLanguages = [.en, .id]
+        progressiveSession.update(text: "流式句子", composing: false, settings: settings, apiKey: "test", immediate: true)
+        try check(progressiveSession.selectableText(for: .en) == "English result" && progressiveSession.busy,
+                  "Expanding another target keeps the completed streaming English field")
+        try await Task.sleep(for: .milliseconds(20))
+        try check(progressiveSession.selectableText(for: .en) == "English result" &&
+                  progressiveSession.selectableText(for: .id) == "Hasil Indonesia" && progressiveSession.busy,
+                  "Streaming a newly expanded language does not erase the earlier result")
+        await progressiveSession.waitForCurrentRequest()
+        try check(progressiveSession.selectableText(for: .id) == "Hasil Indonesia" &&
+                  progressiveSession.selectableText(for: .en) == "English result" &&
+                  progressiveSession.result?.source == .zh, "New target merges with the finished streaming field")
+        let progressiveCalls = await progressive.calls
+        try check(progressiveCalls == [[.en], [.id]], "Mid-stream expansion requests only the missing target")
         try check(migrated.translateClipboard != false, "Clipboard translation defaults on for existing settings")
         try check(migrated.showPinyin != true, "Pinyin hint defaults hidden for existing users")
         try check(SentenceBoundary.endsSentence("明天见。") && SentenceBoundary.endsSentence("Really?"), "Sentence-ending punctuation triggers translation")
@@ -356,7 +582,23 @@ struct Tests {
         let teacher = GrammarTeacher(session: URLSession(configuration: configuration))
         let learning = try await teacher.explain(original: "你好", translation: "Hello", language: .en, settings: settings, apiKey: "test")
         try check(learning.ipa == "/həˈloʊ/" && learning.vocabulary?.first?.word == "Hello", "IPA learning fields decode")
+        var chunkedLesson = lesson
+        chunkedLesson["structure"] = [["word": "Hello", "gloss": "你好"]]
+        MockURLProtocol.data = try lessonResponse(chunkedLesson)
+        let chunked = try await teacher.explain(original: "你好", translation: "Hello", language: .en, settings: settings, apiKey: "test")
+        try check(chunked.structure == "Hello：你好", "Learning accepts structured word-and-gloss chunks")
+        MockURLProtocol.data = try lessonResponse(lesson)
+        var compatibleLessonSettings = settings
+        compatibleLessonSettings.plainJSONOutput = true
+        _ = try await teacher.explain(original: "你好", translation: "Hello", language: .en,
+                                      settings: compatibleLessonSettings, apiKey: "test")
+        compatibleLessonSettings.apiProtocol = .chatCompletions
+        let chatLessonText = String(decoding: try JSONSerialization.data(withJSONObject: lesson), as: UTF8.self)
+        MockURLProtocol.data = try JSONSerialization.data(withJSONObject: ["choices": [["finish_reason": "stop", "message": ["content": chatLessonText]]]])
+        _ = try await teacher.explain(original: "你好", translation: "Hello", language: .en,
+                                      settings: compatibleLessonSettings, apiKey: "test")
         var unrelated = lesson
+        MockURLProtocol.data = try lessonResponse(lesson)
         unrelated["vocabulary"] = [["word": "unrelated", "ipa": "", "meaning": "不应出现"]]
         MockURLProtocol.data = try lessonResponse(unrelated)
         do {
@@ -367,7 +609,6 @@ struct Tests {
             _ = try await teacher.explain(original: "你好", translation: "", language: .en, settings: settings, apiKey: "test")
             throw Failure.check("Empty learning input")
         } catch is TranslationError { print("PASS · Empty translation cannot trigger a lesson") }
-        try await testBlockTranslation()
     }
     static func tryDecode() -> String { (try? OpenAITranslator.decode(response()).en) ?? "" }
 }

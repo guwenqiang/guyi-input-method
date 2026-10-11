@@ -29,18 +29,26 @@ with tempfile.TemporaryDirectory(prefix="guyi-pkg-check-") as directory:
     assert not list(metadata.find("relocate"))
     payload = component / "Payload"
     assert {path.relative_to(payload).as_posix() for path in payload.rglob("*.app")} == set(expected)
+    expected_package_version = None
     for path, identifier in expected.items():
         app = payload / path
         with (app / "Contents/Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
         assert info["CFBundleIdentifier"] == identifier
         if identifier == "app.guyi.inputmethod.Guyi":
-            assert info["TICapsLockLanguageSwitchCapable"] is True
-            assert info["tsInputMethodCharacterRepertoireKey"] == ["Hans"]
+            expected_package_version = f'{info["CFBundleShortVersionString"]}.{info["CFBundleVersion"]}'
+            assert "TICapsLockLanguageSwitchCapable" not in info
+            modes = info["ComponentInputModeDict"]["tsInputModeListKey"]
+            assert all("TICapsLockLanguageSwitchCapable" not in mode for mode in modes.values())
+            assert info["tsInputMethodCharacterRepertoireKey"] == ["Latn", "Hans", "Hira", "Kana", "Hang"]
+            assert "TISIntendedLanguage" not in info
+            assert all("TISIntendedLanguage" not in mode and
+                       "tsInputModeCharacterRepertoireKey" not in mode for mode in modes.values())
             symbols = subprocess.check_output(["nm", "-u", str(app / "Contents/MacOS/guyi")], text=True)
-            assert "_TISEnableInputSource" not in symbols and "_TISDisableInputSource" not in symbols, \
-                "Upgrades must not silently change input-source enablement or enqueue consent prompts"
+            assert "_TISDisableInputSource" not in symbols, "Upgrades must not disable existing input sources"
+            assert "_TISSelectInputSource" not in symbols, "Runtime must not override the user's input-source selection"
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+    assert metadata.get("version") == expected_package_version, "Package version must advance for same-app-version hotfixes"
     for path in payload.rglob("*"):
         assert path.name not in {"credentials.json", "Install GuYi.command"}
         assert not path.is_symlink()
@@ -50,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="guyi-pkg-check-") as directory:
     assert len(components) == 2
     assert all(row["BundleOverwriteAction"] == "upgrade" and not row["BundleIsRelocatable"]
                and row["BundleHasStrictIdentifier"] for row in components)
-    for language in ["en", "zh-Hans", "id"]:
+    for language in ["en", "zh-Hans", "id", "ja", "ko"]:
         for name in ["welcome.html"]:
             assert (expanded / "Resources" / (language + ".lproj") / name).is_file()
-print("PASS · Native Installer package: fixed destinations, atomic bundle upgrades, signed apps, three languages, no user data or Terminal installer")
+print("PASS · Native Installer package: fixed destinations, atomic bundle upgrades, signed apps, five languages, no user data or Terminal installer")

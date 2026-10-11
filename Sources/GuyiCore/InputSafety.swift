@@ -1,6 +1,11 @@
 import Foundation
 
 public enum InputSafety {
+    public static func englishText(_ text: String?, capsLock: Bool, shift: Bool) -> String? {
+        guard let text, capsLock, !text.isEmpty,
+              text.unicodeScalars.allSatisfy({ $0.isASCII && CharacterSet.letters.contains($0) }) else { return text }
+        return shift ? text.uppercased() : text.lowercased()
+    }
     public static func candidatePageDirection(_ text: String, language: Language, hasPreedit: Bool) -> Bool? {
         guard language == .zh, hasPreedit else { return nil }
         if text == "=" { return true }
@@ -20,6 +25,16 @@ public enum InputSafety {
     }
     public static func bypassInputMethod(bundleIdentifier: String?) -> Bool {
         bundleIdentifier == "app.guyi.inputmethod.Guyi" || bundleIdentifier == "app.guyi.launcher"
+    }
+
+    public static func allowsLocalComposition(bundleIdentifier: String?) -> Bool {
+        !bypassInputMethod(bundleIdentifier: bundleIdentifier) &&
+            !SensitiveContentPolicy.protectedApplication(bundleIdentifier)
+    }
+
+
+    public static func capsUsesSystemInputSource(bundleIdentifier: String?) -> Bool {
+        bundleIdentifier == "com.google.Chrome"
     }
 
     public static func spaceCommitsSentence(language: Language, sentenceMode: Bool, hasPreedit: Bool, draft: String) -> Bool {

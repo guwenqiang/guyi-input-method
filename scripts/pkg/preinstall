@@ -42,9 +42,7 @@ for name in guyi GuYi; do
         esac
     done < <(/usr/bin/pgrep -x "$name" || true)
 done
-for attempt in {1..20}; do
-    if ! /usr/bin/pgrep -x guyi >/dev/null && ! /usr/bin/pgrep -x GuYi >/dev/null; then exit 0; fi
-    /bin/sleep 0.25
-done
-echo 'GuYi did not stop normally; installation cancelled without forcing it.' >&2
-exit 1
+# A selected input method may be relaunched by macOS immediately. The package
+# replaces both bundles atomically; postinstall stops any instance started from
+# the old files after replacement so the new binary is loaded.
+exit 0

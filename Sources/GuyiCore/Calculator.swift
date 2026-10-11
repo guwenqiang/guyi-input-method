@@ -20,6 +20,10 @@ public enum Calculator {
         !text.isEmpty && text.allSatisfy { "0123456789.,+-*/^()×÷−".contains($0) }
     }
 
+    public static func trailingExpression(in text: String) -> String {
+        String(text.reversed().prefix { accepts(String($0)) }.reversed())
+    }
+
     private static func grouped(_ value: String) -> String {
         value.split(separator: "/").map { part in
             let pieces = part.split(separator: ".", omittingEmptySubsequences: false)

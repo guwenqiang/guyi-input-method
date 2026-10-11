@@ -15,6 +15,7 @@ import OSLog
     private var hostPID: pid_t?
     private var lastSelection = ""
     private var dismissedSelection = ""
+    private var selectionBeforeHostSwitch: (pid: pid_t, text: String)?
     private var clicks: UInt64 = 0
     private var clipboardCount = NSPasteboard.general.changeCount
     private var pendingClipboard: (text: String, ready: Date, pid: pid_t, mouseCount: UInt64)?
@@ -34,6 +35,7 @@ import OSLog
     private var visibleSelection: (pid: pid_t, text: String, bounds: NSRect)?
     private var exactCaptureInProgress = false
     private var pasteSuppressedUntil = Date.distantPast
+    private var selectionEditSuppressedUntil = Date.distantPast
     private let routingLogger = Logger(subsystem: "app.guyi.inputmethod.Guyi", category: "SelectionRouting")
     private func audit(_ event: String, length: Int = 0) {
         guard UserDefaults.standard.bool(forKey: "diagnoseSelectionRouting") else { return }
@@ -46,6 +48,17 @@ import OSLog
         pendingClipboard = nil
         if isShowing { close() }
     }
+    func noteDeletion() {
+        inputRevision += 1
+        selectionEditSuppressedUntil = Date().addingTimeInterval(0.6)
+        pendingVisualGesture = nil
+        pendingSelectAll = nil
+        visibleSelection = nil
+        pendingClipboard = nil
+        explicitCopy = nil
+        if !model.original.isEmpty { lastSelection = model.original }
+        close()
+    }
     var isShowing: Bool { panel?.isVisible == true }
     private var mouseCount: UInt64 {
         UInt64(CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)) +
@@ -54,8 +67,9 @@ import OSLog
     func start(preferences: Preferences) {
         guard timer == nil else { return }
         self.preferences = preferences
-        model.retryTranslation = { [weak self] in self?.translate() }
+        model.retryTranslation = { [weak self] in self?.translate(forceRefresh: true) }
         model.clipboardMode = true
+        model.restoreCollapsedLanguages()
         model.settings = { [weak self] in self?.close(); NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/GuYi输入法.app")) }
         model.toggleLanguage = { [weak self] language in
             guard let self, let preferences = self.preferences else { return }
@@ -63,6 +77,7 @@ import OSLog
             if languages.contains(language) { languages.removeAll { $0 == language } } else { languages.append(language) }
             preferences.saveSelectionLanguages(languages)
         }
+        model.translationTargetsChanged = { [weak self] in self?.translate() }
         model.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async {
                 guard let self, self.isShowing else { return }
@@ -79,6 +94,10 @@ import OSLog
             }
         }.store(in: &observers)
         NotificationCenter.default.publisher(for: .guyiSelectionLanguagesChanged).sink { [weak self] _ in self?.translate() }.store(in: &observers)
+        NotificationCenter.default.publisher(for: .guyiSelectionPauseChanged).sink { [weak self] _ in
+            guard let self, let preferences = self.preferences else { return }
+            if preferences.selectionTranslationPaused { self.close(); self.pendingClipboard = nil }
+        }.store(in: &observers)
         NotificationCenter.default.publisher(for: .guyiSettingsChanged).sink { [weak self] _ in
             guard let self else { return }
             if preferences.settings.translateSelection == false && preferences.settings.translateClipboard == false { self.close() }
@@ -91,6 +110,14 @@ import OSLog
             let pointer = NSEvent.mouseLocation
             Task { @MainActor in
                 guard let self else { return }
+                if let preferences = self.preferences,
+                   InputShortcuts.action(key: UInt32(event.keyCode),
+                       modifiers: ShortcutRecorder.carbonModifiers(event.modifierFlags),
+                       settings: preferences.settings, hasCandidates: false) == "toggleSelectionTranslation" {
+                    preferences.toggleSelectionTranslation()
+                    return
+                }
+                if [51, 117].contains(event.keyCode) { self.noteDeletion(); return }
                 if self.exactCaptureInProgress { return }
                 self.inputRevision += 1
                 self.visibleSelection = nil
@@ -146,6 +173,7 @@ import OSLog
                     self.close()
                     self.clicks = self.mouseCount
                     self.dismissedSelection = ""
+                    if self.selectionBeforeHostSwitch?.pid == pid { self.selectionBeforeHostSwitch = nil }
                     if dragged, let start { self.pendingVisualGesture = (pid, start.1, pointer) }
                     else if clickCount >= 2 { self.pendingVisualGesture = (pid, pointer, pointer) }
                 }
@@ -163,12 +191,30 @@ import OSLog
         resetLesson()
         TranslationSpeech.shared.stop()
     }
+    func frontApplicationChanged() {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              pid != hostPID else { return }
+        if let hostPID, isShowing, !model.original.isEmpty {
+            selectionBeforeHostSwitch = (hostPID, model.original)
+        }
+        close()
+        hostPID = pid
+        lastSelection = ""
+        dismissedSelection = selectionBeforeHostSwitch?.pid == pid ? selectionBeforeHostSwitch!.text : ""
+        pendingClipboard = nil
+        clipboardCount = NSPasteboard.general.changeCount
+        visibleSelection = nil
+        if pendingVisualGesture?.pid != pid { pendingVisualGesture = nil }
+        if pendingSelectAll?.pid != pid { pendingSelectAll = nil }
+        explicitCopy = nil
+    }
     private let selectedTextReader = SelectedTextReader()
     private func poll() async {
         guard !readingSelection else { return }
         readingSelection = true
         defer { readingSelection = false }
         guard let preferences else { return }
+        guard !preferences.selectionTranslationPaused else { return }
         guard preferences.settings.translateSelection != false || preferences.settings.translateClipboard != false else { return }
         guard !TranslationPrivacy.protectedContext() else {
             pendingClipboard = nil; clipboardCount = NSPasteboard.general.changeCount
@@ -180,6 +226,17 @@ import OSLog
               (CGSessionCopyCurrentDictionary() as NSDictionary?)?["CGSSessionScreenIsLocked"] as? Bool != true,
               let front = NSWorkspace.shared.frontmostApplication,
               !["app.guyi.inputmethod.Guyi", "app.guyi.launcher"].contains(front.bundleIdentifier ?? "") else { return }
+        // Finder exposes selected file names as AX selected text. Opening a file
+        // with a double-click must not be interpreted as a translation gesture.
+        if front.bundleIdentifier == "com.apple.finder" {
+            pendingVisualGesture = nil
+            pendingSelectAll = nil
+            pendingClipboard = nil
+            visibleSelection = nil
+            clipboardCount = NSPasteboard.general.changeCount
+            if isShowing { close() }
+            return
+        }
         let privateField = await TranslationPrivacy.excludedFocusedField(pid: front.processIdentifier)
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == front.processIdentifier else { return }
         if privateField {
@@ -191,12 +248,7 @@ import OSLog
             return
         }
         if front.processIdentifier != hostPID {
-            close(); hostPID = front.processIdentifier; lastSelection = ""; dismissedSelection = ""
-            pendingClipboard = nil; clipboardCount = NSPasteboard.general.changeCount
-            visibleSelection = nil
-            if pendingVisualGesture?.pid != front.processIdentifier { pendingVisualGesture = nil }
-            if pendingSelectAll?.pid != front.processIdentifier { pendingSelectAll = nil }
-            explicitCopy = nil
+            frontApplicationChanged()
         }
         let count = mouseCount
         if count != clicks {
@@ -208,7 +260,7 @@ import OSLog
             if panel?.frame.contains(NSEvent.mouseLocation) != true { visibleSelection = nil }
             if isShowing, panel?.frame.contains(NSEvent.mouseLocation) != true { close() }
         }
-        guard !CGEventSource.buttonState(.combinedSessionState, button: .left), !ScreenshotService.shared.capturing else { return }
+        guard !CGEventSource.buttonState(.combinedSessionState, button: .left) else { return }
         let pasteboard = NSPasteboard.general
         let protectedClipboard = TranslationPrivacy.protectedClipboard(pasteboard)
         if protectedClipboard { pendingClipboard = nil; clipboardCount = pasteboard.changeCount }
@@ -216,6 +268,11 @@ import OSLog
             clipboardCount = pasteboard.changeCount
             pendingClipboard = nil
             dismissedSelection = lastSelection
+            return
+        }
+        if Date() < selectionEditSuppressedUntil {
+            clipboardCount = pasteboard.changeCount
+            pendingClipboard = nil
             return
         }
         var found: (String, NSRect)? = visibleSelection?.pid == front.processIdentifier
@@ -232,10 +289,13 @@ import OSLog
             let pointer = selectionPointer?.0 == front.processIdentifier ? selectionPointer?.1 : nil
             found = await selectedTextReader.readAsync(pid: front.processIdentifier, selectionPointer: pointer,
                                                       requirePointerMatch: requirePointerMatch)
-            audit(found == nil ? "ax-empty" : "ax-found", length: found?.0.count ?? 0)
+            if found != nil || pendingVisualGesture != nil || pendingSelectAll != nil || !lastSelection.isEmpty {
+                audit(found == nil ? "ax-empty" : "ax-found", length: found?.0.count ?? 0)
+            }
             if found != nil { source = "ax" }
             guard revision == inputRevision, selectionClicks == mouseCount,
-                  !suppressingAutomaticTranslation, !ScreenshotService.shared.capturing, !TranslationPrivacy.protectedContext(),
+                  !preferences.selectionTranslationPaused, !suppressingAutomaticTranslation,
+                  !TranslationPrivacy.protectedContext(),
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == front.processIdentifier else { return }
         }
         let exactGesture: (pid: pid_t, start: NSPoint, end: NSPoint)? = pendingVisualGesture ??
@@ -247,6 +307,7 @@ import OSLog
             pendingVisualGesture = nil
             pendingSelectAll = nil
             exactCaptureInProgress = true
+            let revision = inputRevision
             let selectionClicks = mouseCount
             let exact = await ExactSelectionCapture.read(pid: gesture.pid, mouseCount: selectionClicks) { [weak self] in
                 self?.mouseCount ?? 0
@@ -255,8 +316,9 @@ import OSLog
             clipboardCount = NSPasteboard.general.changeCount
             explicitCopy = nil
             pendingClipboard = nil
-            guard selectionClicks == mouseCount, !suppressingAutomaticTranslation,
-                  !ScreenshotService.shared.capturing, !TranslationPrivacy.protectedContext(),
+            guard revision == inputRevision, selectionClicks == mouseCount,
+                  !preferences.selectionTranslationPaused, !suppressingAutomaticTranslation,
+                  !TranslationPrivacy.protectedContext(),
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == front.processIdentifier else { return }
             if let exact {
                 let bounds = NSRect(x: gesture.end.x, y: gesture.end.y - 9, width: 1, height: 18)
@@ -273,7 +335,7 @@ import OSLog
             pendingClipboard = nil
             clipboardCount = pasteboard.changeCount
             if found.0 != lastSelection {
-                dismissedSelection = ""
+                if found.0 != dismissedSelection { dismissedSelection = "" }
                 if preferences.settings.copySelectionAutomatically == true {
                     pasteboard.clearContents(); pasteboard.setString(found.0, forType: .string)
                     clipboardCount = pasteboard.changeCount
@@ -333,14 +395,18 @@ import OSLog
         panel?.present(near: anchor, avoiding: anchor)
         translate()
     }
-    private func translate() {
-        guard let preferences, isShowing, !model.original.isEmpty else { return }
+    private func translate(forceRefresh: Bool = false) {
+        guard let preferences, !preferences.selectionTranslationPaused, isShowing, !model.original.isEmpty else { return }
         guard SelectionTranslationPolicy.shouldTranslate(model.original, settings: preferences.settings, interfaceLanguage: InterfaceLanguage.shared.code) else { close(); return }
         resetLesson()
         model.enabledLanguages = preferences.settings.selectionLanguages ?? [.en, .id]
         var settings = preferences.settings
-        settings.source = .auto; settings.enabledLanguages = model.enabledLanguages; settings.translateWholeSelection = true
-        model.translation.update(text: model.original, composing: false, settings: settings, apiKey: preferences.apiKey, immediate: true)
+        settings.source = .auto; settings.enabledLanguages = model.requestedLanguages; settings.translateWholeSelection = true
+        // Whole selections often contain several sentences and need a little
+        // more time for structured multi-target output than a short keystroke.
+        settings.timeoutSeconds = max(settings.timeoutSeconds, 45)
+        model.translation.update(text: model.original, composing: false, settings: settings,
+                                 apiKey: preferences.apiKey, immediate: true, forceRefresh: forceRefresh)
     }
     private func resetLesson() {
         grammarTask?.cancel(); grammarTask = nil; grammarRevision += 1

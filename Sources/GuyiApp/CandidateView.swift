@@ -14,12 +14,14 @@ final class CandidateModel: ObservableObject {
     private var cachedTextHeights: [String: CGFloat] = [:]
     @Published var selected = 0
     @Published var language = Language.zh
+    @Published var translationSource = Language.zh
+    @Published var collapsedLanguages: Set<Language> = []
     @Published var enabledLanguages: [Language] = [.zh, .en, .id]
     @Published var selectedOutput = Language.zh
     @Published var clipboardMode = false
     @Published var showPinyin = false
     @Published var sentenceMode = false
-    @Published var awaitingConfirmation = false
+    @Published var secureInputNotice = false
     @Published var quickContentStatus = ""
     @Published var calculationExpression = ""
     @Published var calculationResult: String?
@@ -28,9 +30,24 @@ final class CandidateModel: ObservableObject {
     @Published var page = 0
     @Published var lastPage = true
     static let panelWidth: CGFloat = 460
-    static let panelHeight: CGFloat = 300
     static let rowWidth: CGFloat = panelWidth - 20
+    static let translationBlockSpacing: CGFloat = 7
+    static let translationHeaderHeight: CGFloat = 13
     @Published var selectingLanguages = false
+    private let collapseDefaults: UserDefaults
+    private var collapseKey: String {
+        clipboardMode ? "collapsedSelectionTranslationLanguages" : "collapsedInputTranslationLanguages"
+    }
+    func restoreCollapsedLanguages() {
+        collapsedLanguages = Set((collapseDefaults.stringArray(forKey: collapseKey) ?? [])
+            .compactMap(Language.init(rawValue:)).filter { Language.targets.contains($0) })
+    }
+    func toggleCollapsedLanguage(_ language: Language) {
+        if collapsedLanguages.contains(language) { collapsedLanguages.remove(language) }
+        else { collapsedLanguages.insert(language) }
+        collapseDefaults.set(collapsedLanguages.map(\.rawValue).sorted(), forKey: collapseKey)
+        translationTargetsChanged?()
+    }
     private func textHeight(_ text: String, font: CGFloat, width: CGFloat) -> CGFloat {
         let key = "\(font):\(width):" + text
         if let value = cachedTextHeights[key] { return value }
@@ -45,17 +62,70 @@ final class CandidateModel: ObservableObject {
         let text = translation.result?.text(for: language) ?? original
         return min(110, max(30, textHeight(text, font: 14, width: 330) + 8))
     }
+    var displayedLanguages: [Language] {
+        Language.targets.reversed().filter {
+            enabledLanguages.contains($0) && (clipboardMode || $0 != translationSource)
+        }
+    }
+    var requestedLanguages: [Language] {
+        enabledLanguages.filter { !collapsedLanguages.contains($0) }
+    }
+    var learningLanguages: [Language] {
+        displayedLanguages.filter { [.en, .id].contains($0) && !collapsedLanguages.contains($0) }
+    }
+    private var autoLessonPending = false
+    func toggleLesson() {
+        expanded.toggle()
+        autoLessonPending = expanded
+        tryAutomaticLesson()
+    }
+    func tryAutomaticLesson() {
+        guard autoLessonPending, expanded, learningLanguages.count == 1,
+              let language = learningLanguages.first,
+              translation.currentText == original,
+              translation.result?.text(for: language).isEmpty == false else { return }
+        autoLessonPending = false
+        learn?(language)
+    }
+    func selectLesson(_ language: Language) {
+        autoLessonPending = false
+        learn?(language)
+    }
+    var showsTranslationContent: Bool {
+        clipboardMode || selectingLanguages || expanded || !displayedLanguages.isEmpty
+    }
+    var translationTargetsChanged: (() -> Void)?
+    private var translationRowsHeight: CGFloat {
+        displayedLanguages.reduce(CGFloat.zero) { height, language in
+            height + Self.translationHeaderHeight + (collapsedLanguages.contains(language) ? 0 : translationHeight(language) + 10 + Self.translationBlockSpacing)
+        } + CGFloat(max(0, displayedLanguages.count - 1)) * Self.translationBlockSpacing
+    }
+    var translationContentHeight: CGFloat {
+        translationRowsHeight + (expanded ? lessonAreaHeight : 0)
+    }
+    var lessonAreaHeight: CGFloat {
+        // Divider, gap, language toolbar and the lesson viewport.
+        1 + Self.translationBlockSpacing + 24 + (lesson == nil ? 44 : 180)
+    }
+    var translationViewportHeight: CGFloat {
+        let otherSections: [CGFloat] = [24, 1] + (showPinyin && language == .zh && !clipboardMode ? [16] : [])
+            + (candidates.isEmpty ? [originalHeight] : [32, 16])
+        let chrome = 20 + otherSections.reduce(0, +) + CGFloat(otherSections.count) * Self.translationBlockSpacing
+        return max(0, min(translationContentHeight, displayHeight - chrome))
+    }
     var displayHeight: CGFloat {
         if !calculationExpression.isEmpty {
             let contentHeight = textHeight(calculationExpression, font: 14, width: Self.rowWidth) +
                 textHeight(calculationResult ?? calculationError, font: 22, width: Self.rowWidth)
             return min(260, max(165, contentHeight + 112))
         }
-        guard clipboardMode else { return Self.panelHeight }
-        if selectingLanguages { return 340 }
-        let targets = enabledLanguages
-        let rows = targets.reduce(CGFloat.zero) { $0 + translationHeight($1) + 30 }
-        return min(420, max(150, 60 + originalHeight + rows + (expanded ? 210 : 0)))
+        if clipboardMode && selectingLanguages { return 340 }
+        var sections: [CGFloat] = [24]
+        if showsTranslationContent { sections += [translationContentHeight, 1] }
+        if showPinyin && language == .zh && !clipboardMode { sections.append(16) }
+        sections += candidates.isEmpty ? [originalHeight] : [32, 16]
+        let height = 20 + sections.reduce(0, +) + CGFloat(sections.count - 1) * Self.translationBlockSpacing
+        return min(420, max(clipboardMode ? 150 : 110, height))
     }
     @Published var candidateStart = 0
     var candidateGroups: [Range<Int>] {
@@ -103,7 +173,11 @@ final class CandidateModel: ObservableObject {
     @Published var lessonLanguage = Language.en
     @Published var expanded = false
     let translation: TranslationSession
-    init(translation: TranslationSession? = nil) { self.translation = translation ?? TranslationSession() }
+    init(translation: TranslationSession? = nil, defaults: UserDefaults = .standard) {
+        self.translation = translation ?? TranslationSession()
+        collapseDefaults = defaults
+        restoreCollapsedLanguages()
+    }
     var pick: ((Int) -> Void)?
     var insert: ((Language) -> Void)?
     var copyText: ((String) -> Void)?
@@ -115,7 +189,6 @@ final class CandidateModel: ObservableObject {
     var turnPage: ((Bool) -> Void)?
     var toggleLanguage: ((Language) -> Void)?
     var toggleSentence: (() -> Void)?
-    var emoji: (() -> Void)?
 }
 
 struct CandidateView: View {
@@ -149,51 +222,72 @@ struct CandidateView: View {
                 }
             } else {
             HStack(spacing: 8) {
-                Text(model.quickContentStatus.isEmpty ? (model.clipboardMode ? Localizer.text("选文翻译") : Brand.name) : model.quickContentStatus)
+                if model.secureInputNotice {
+                    Image(systemName: "lock.shield").foregroundStyle(.secondary)
+                        .help(Localizer.text("安全输入期间暂停云翻译、划词与词组学习"))
+                }
+                Text(model.secureInputNotice ? Localizer.text("安全输入 · 仅本地输入") :
+                     (model.quickContentStatus.isEmpty ? (model.clipboardMode ? Localizer.text("选文翻译") : Brand.name) : model.quickContentStatus))
                     .font(.system(size: 11, weight: .medium, design: .rounded)).foregroundStyle(model.quickContentStatus.isEmpty ? Color.secondary : Color.primary).lineLimit(1)
-                    .help(model.quickContentStatus)
+                    .help(model.secureInputNotice ? Localizer.text("安全输入期间暂停云翻译、划词与词组学习") : model.quickContentStatus)
                 Spacer()
-                if model.clipboardMode {
-                    Button(Localizer.text("翻译语言")) { model.selectingLanguages.toggle() }
-                        .buttonStyle(.plain).font(.caption)
-                } else {
-                    Button(action: { model.emoji?() }) { Image(systemName: "face.smiling") }
-                        .buttonStyle(.plain).help(Localizer.text("表情与符号"))
-                }
-                if !model.clipboardMode {
-                Button(action: { model.toggleSentence?() }) {
-                    Image(systemName: model.sentenceMode ? "text.badge.checkmark" : "text.alignleft")
-                        .foregroundStyle(model.sentenceMode ? accent : Color.secondary)
-                }.buttonStyle(.plain)
-                    .help(Localizer.text(model.sentenceMode ? "整句模式已开启 · 点击关闭" : "短句模式 · 点击开启整句"))
-                    .accessibilityLabel(Localizer.text("切换整句模式"))
-                }
                 if translation.busy {
-                    ProgressView().controlSize(.mini).help("正在翻译")
-                } else if translation.result == nil && translation.preview.isEmpty && !model.original.isEmpty {
+                    ProgressView().controlSize(.mini)
+                        .frame(width: 20, height: 20).help(Localizer.text("正在翻译"))
+                } else {
                     Button(action: { model.retryTranslation?() }) { Image(systemName: "arrow.clockwise") }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
                         .help(Localizer.text("重新翻译")).accessibilityLabel(Localizer.text("重新翻译"))
-                        .disabled(model.retryTranslation == nil)
-                } else if let note = translation.result?.note, !note.isEmpty {
+                        .frame(width: 20, height: 20)
+                        .disabled(model.retryTranslation == nil || model.original.isEmpty)
+                }
+                if model.clipboardMode {
+                    Button(action: { model.selectingLanguages.toggle() }) {
+                        Image(systemName: "globe")
+                            .foregroundStyle(model.selectingLanguages ? accent : Color.secondary)
+                    }.buttonStyle(.plain)
+                        .frame(width: 20, height: 20)
+                        .help(Localizer.text("选择译文目标语言（可多选）"))
+                        .accessibilityLabel(Localizer.text("选择译文目标语言（可多选）"))
+                }
+                if let note = translation.result?.note, !note.isEmpty {
                     Image(systemName: "info.circle").foregroundStyle(.secondary)
                         .help(note).accessibilityLabel(Localizer.text("翻译说明"))
                 }
-                Button(action: { model.expanded.toggle() }) { Image(systemName: "book.closed") }
+                if !model.clipboardMode {
+                    Button(action: { model.toggleSentence?() }) {
+                        Image(systemName: "paragraphsign")
+                            .foregroundStyle(model.sentenceMode ? accent : Color.secondary)
+                    }.buttonStyle(.plain)
+                        .help(Localizer.text(model.sentenceMode ? "整句模式已开启 · 点击关闭" : "短句模式 · 点击开启整句"))
+                        .accessibilityLabel(Localizer.text("切换整句模式"))
+                }
+                Button(action: { model.toggleLesson() }) {
+                    Image(systemName: "book.closed")
+                        .foregroundStyle(model.expanded ? accent : Color.secondary)
+                }
                     .buttonStyle(.plain).help("音标与学习").accessibilityLabel(Localizer.text("读懂 · 学会用"))
                 if model.clipboardMode {
                     Text(model.language.title).font(.caption).foregroundStyle(.secondary)
                 } else {
                 Button(action: { model.cycle?() }) {
-                    Text(Localizer.text(model.language.title)).font(.caption.weight(.medium)).padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(accent.opacity(0.12), in: Capsule())
-                }.buttonStyle(.plain).help(Localizer.text("切换原文语言") + " " + InputShortcuts.display("cycleLanguage", settings: model.themeSettings))
+                    Text(model.language == .zh ? "中" : model.language == .ja ? "日" :
+                         model.language == .ko ? "한" : model.language == .id ? "ID" : "EN")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 26, height: 24)
+                        .foregroundStyle(accent)
+                        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                }.buttonStyle(.plain)
+                    .help(Localizer.format("当前输入：%@ · 点击切换", model.language.title)
+                          + " " + InputShortcuts.display("cycleLanguage", settings: model.themeSettings))
+                    .accessibilityLabel(Localizer.format("当前输入：%@", model.language.title))
                 }
                 Button(action: { model.settings?() }) { Image(systemName: "slider.horizontal.3") }
                     .buttonStyle(.plain).help("设置")
             }
+            if model.showsTranslationContent {
             ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 0) {
             if model.clipboardMode, model.selectingLanguages {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
                     ForEach(Language.targets) { language in
@@ -204,13 +298,15 @@ struct CandidateView: View {
                 Button(Localizer.text("完成")) { model.selectingLanguages = false }.buttonStyle(.bordered)
             } else {
             if model.expanded {
-                Divider()
+                Divider().padding(.bottom, CandidateModel.translationBlockSpacing)
                 HStack {
                     Text("读懂 · 学会用").font(.caption.weight(.semibold))
                     Spacer()
-                    Button("English") { model.learn?(.en) }.disabled(translation.result?.en.isEmpty != false)
-                    Button("Indonesia") { model.learn?(.id) }.disabled(translation.result?.id.isEmpty != false)
-                }.font(.caption)
+                    ForEach(model.learningLanguages) { language in
+                        Button(language == .en ? "English" : "Indonesia") { model.selectLesson(language) }
+                            .disabled(translation.result?.text(for: language).isEmpty != false)
+                    }
+                }.font(.caption).frame(height: 24)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         if let lesson = model.lesson {
@@ -240,27 +336,32 @@ struct CandidateView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                }.defaultScrollAnchor(.top).id(model.lessonLanguage).frame(height: 180)
+                }.defaultScrollAnchor(.top).id(model.lessonLanguage).frame(height: model.lesson == nil ? 44 : 180)
             }
-            ForEach(Language.targets.reversed().filter { (model.clipboardMode || model.sentenceMode || $0 != model.language) && (model.enabledLanguages.contains($0) || (!model.clipboardMode && [Language.zh, .en, .id].contains($0))) }) { language in
-                VStack(alignment: .leading, spacing: 2) {
-                    Button(action: { model.toggleLanguage?(language) }) {
+            ForEach(Array(model.displayedLanguages.enumerated()), id: \.element) { index, language in
+                VStack(alignment: .leading, spacing: 0) {
+                    Button(action: {
+                        model.toggleCollapsedLanguage(language)
+                    }) {
                         HStack {
-                            Image(systemName: model.enabledLanguages.contains(language) ? "chevron.down" : "chevron.right")
+                            Image(systemName: model.collapsedLanguages.contains(language) ? "chevron.right" : "chevron.down")
                             Text(Localizer.text(language.title))
-                            if !model.enabledLanguages.contains(language) { Text("已关闭").foregroundStyle(.secondary) }
                             Spacer()
                         }.font(.system(size: 10))
                     }.buttonStyle(.plain)
-                    if model.enabledLanguages.contains(language) { row(language) }
-                }
+                    if !model.collapsedLanguages.contains(language) {
+                        row(language).padding(.top, CandidateModel.translationBlockSpacing)
+                    }
+                }.padding(.top, index == 0 ? 0 : CandidateModel.translationBlockSpacing)
             }
             }
             }
-            }.defaultScrollAnchor(.top).id(model.original + (model.expanded ? "|lesson" : "|translation") + (model.selectingLanguages ? "|languages" : ""))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.defaultScrollAnchor(.top).id(model.original + (model.selectingLanguages ? "|languages" : ""))
+                .frame(maxWidth: .infinity, alignment: .top)
+                .frame(height: model.clipboardMode && model.selectingLanguages ? nil : model.translationViewportHeight)
             Divider()
-            if model.showPinyin {
+            }
+            if model.showPinyin && model.language == .zh && !model.clipboardMode {
                 Text(model.preedit.isEmpty ? " " : model.preedit).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).frame(height: 16)
             }
             if !model.candidates.isEmpty {
@@ -279,7 +380,7 @@ struct CandidateView: View {
                 }.frame(height: 16)
             } else {
                 HStack {
-                    Text(model.awaitingConfirmation ? ShortcutMessages.text(.unconfirmed) : Localizer.text("原文"))
+                    Text(Localizer.text("原文"))
                         .font(.caption).foregroundStyle(.secondary)
                     ScrollView(.vertical) {
                         Text(model.original).font(.system(size: 16)).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true).frame(minHeight: model.originalHeight, alignment: .leading)
@@ -310,6 +411,8 @@ struct CandidateView: View {
         .environment(\.colorScheme, theme.dark ? .dark : .light)
         .onChange(of: model.original) { _, _ in speech.stop() }
         .onChange(of: model.clipboardMode) { _, _ in model.selectingLanguages = false }
+        .onChange(of: translation.result) { _, _ in model.tryAutomaticLesson() }
+        .onChange(of: model.collapsedLanguages) { _, _ in model.tryAutomaticLesson() }
     }
 
     private func candidateButton(_ index: Int, _ candidate: String) -> some View {
@@ -336,7 +439,7 @@ struct CandidateView: View {
                 .font(.system(size: 10, weight: .bold)).foregroundStyle(accent)
                 .frame(width: 27, height: 24).background(accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 6))
             ScrollView(.vertical) {
-                Text(result?.text(for: language) ?? translation.preview[language.rawValue] ?? (translation.busy ? Localizer.text("翻译中…") : translation.status))
+                Text(translation.selectableText(for: language) ?? translation.preview[language.rawValue] ?? (translation.busy ? Localizer.text("翻译中…") : translation.status))
                     .font(.system(size: 14)).foregroundStyle(result == nil ? .secondary : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -381,13 +484,9 @@ final class CandidatePanel: NSPanel {
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         let host = NSHostingView(rootView: CandidateView(model: model, translation: model.translation))
+        host.sizingOptions = []
         hostedContent = host
-        let scroll = NSScrollView()
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.documentView = host
-        contentView = scroll
+        contentView = host
     }
     func present(near caret: NSRect, avoiding: NSRect? = nil) {
         guard caret.height > 0 else { orderOut(nil); return }
@@ -402,17 +501,12 @@ final class CandidatePanel: NSPanel {
             orderOut(nil)
             return
         }
-        hostedContent?.setFrameSize(size)
         let layoutChanged = !isVisible || self.frame.size != frame.size || lastContentSize != size
         placementCaret = caret
         placedAbove = frame.minY >= caret.maxY
-        if self.frame != frame { setFrame(frame, display: true, animate: false) }
-        if layoutChanged, let scroll = contentView as? NSScrollView, let host = hostedContent {
-            scroll.layoutSubtreeIfNeeded()
-            let bottom = max(0, size.height - scroll.contentView.bounds.height)
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: host.isFlipped ? bottom : 0))
-            scroll.reflectScrolledClipView(scroll.contentView)
-        }
+        if self.frame != frame { setFrame(frame, display: false, animate: false) }
+        if layoutChanged { hostedContent?.layoutSubtreeIfNeeded() }
+        if layoutChanged { displayIfNeeded() }
         lastContentSize = size
         if !isVisible { orderFrontRegardless() }
     }

@@ -18,7 +18,7 @@ python3 scripts/pkg-smoke.py
 cp dist/GuYi-Input-Method-macOS-arm64.pkg "$package_dir/GuYi-Input-Method.pkg"
 python3 scripts/help.py
 ditto .build/help "$package_dir/Help"
-cp docs/使用说明.html "$package_dir/User Guide.html"
+cp '.build/User Guide.html' "$package_dir/User Guide.html"
 ditto -c -k --keepParent "$package_dir" dist/GuYi-Input-Method-macOS-arm64.zip
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/.build.noindex/Guyi.app/Contents/Info.plist)
 dmg="dist/GuYi-Input-Method-${version}-macOS-arm64.dmg"

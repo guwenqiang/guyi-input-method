@@ -22,6 +22,9 @@ class Links(HTMLParser):
 
 
 directory = generate()
+guide = Links()
+guide.feed((directory.parent / "User Guide.html").read_text())
+assert set(guide.links) == {"Help/" + language + ".html" for language in LANGUAGES}
 for language in LANGUAGES:
     page = directory / (language + ".html")
     parser = Links()
@@ -37,3 +40,6 @@ for path in [ROOT / "README.md", ROOT / "docs/README.en.md", ROOT / "docs/README
     for target in re.findall(r"\]\(([^)]+)\)", path.read_text()):
         assert (path.parent / target.split("#")[0]).exists(), (path, target)
     print("PASS · README local links:", path.name)
+for target in re.findall(r"\]\(([^)]+)\)", (ROOT / "docs/使用说明.md").read_text()):
+    assert (ROOT / "docs" / target).is_file(), target
+print("PASS · GitHub help index and offline guide links")

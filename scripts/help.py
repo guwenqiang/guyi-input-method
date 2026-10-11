@@ -3,14 +3,14 @@ import html
 import re
 
 ROOT = Path(__file__).resolve().parent.parent
-LANGUAGES = {"zh-Hans": "简体中文", "en": "English", "id": "Bahasa Indonesia"}
+LANGUAGES = {"zh-Hans": "简体中文", "en": "English", "id": "Bahasa Indonesia", "ja": "日本語", "ko": "한국어"}
 
 
 def inline(value):
     value = html.escape(value)
     value = re.sub(r"`([^`]+)`", r"<code>\1</code>", value)
     value = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", value)
-    return re.sub(r"\[([^\]]+)\]\((zh-Hans|en|id)\.md\)", r'<a href="\2.html">\1</a>', value)
+    return re.sub(r"\[([^\]]+)\]\((zh-Hans|en|id|ja|ko)\.md\)", r'<a href="\2.html">\1</a>', value)
 
 
 def generate():
@@ -41,6 +41,18 @@ a{{color:light-dark(#1456aa,#92c5ff)}}code{{overflow-wrap:anywhere;background:#8
 p{{overflow-wrap:anywhere}}@media print{{nav{{display:none}}body{{margin:0;max-width:none}}}}
 </style></head><body>{blocks[0]}{blocks[1]}<nav aria-label="Contents"><ul>{''.join(navigation)}</ul></nav>{''.join(blocks[2:])}</body></html>'''
         (destination / (language + ".html")).write_text(page)
+    links = "".join(
+        f'<a href="Help/{language}.html">{html.escape(label)}</a>'
+        for language, label in LANGUAGES.items()
+    )
+    guide = f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GuYi Help</title><style>
+:root{{color-scheme:light dark;font-family:system-ui,-apple-system,sans-serif;line-height:1.7}}
+body{{max-width:680px;margin:8vh auto;padding:0 24px}}h1{{font-size:28px}}
+a{{display:block;margin:12px 0;color:light-dark(#1456aa,#92c5ff)}}
+</style></head><body><h1>GuYi</h1>{links}</body></html>'''
+    (destination.parent / "User Guide.html").write_text(guide)
     return destination
 
 

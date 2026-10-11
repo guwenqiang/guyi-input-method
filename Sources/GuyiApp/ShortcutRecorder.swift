@@ -49,7 +49,7 @@ final class ShortcutField: NSButton {
         guard !recording else { return }
         window?.makeFirstResponder(self)
         recording = true
-        ScreenshotService.shared.pauseShortcutRecording(true)
+        SelectionHotKey.shared.pauseRecording(true)
         title = Localizer.text("请按组合键 · Esc 取消")
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self, self.recording, event.window === self.window else { return event }
@@ -74,7 +74,7 @@ final class ShortcutField: NSButton {
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         guard recording else { return }
         recording = false
-        ScreenshotService.shared.pauseShortcutRecording(false)
+        SelectionHotKey.shared.pauseRecording(false)
         refreshTitle()
     }
     override func resignFirstResponder() -> Bool { finish(); return super.resignFirstResponder() }

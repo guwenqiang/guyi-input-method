@@ -1,0 +1,10 @@
+# Kana-only first phase. The upstream Kanji dictionaries have separate data
+# licenses and are intentionally not bundled in this input mode.
+---
+name: jaroomaji
+version: "1.0"
+sort: by_weight
+use_preset_vocabulary: false
+import_tables:
+  - jaroomaji.kana_kigou
+...

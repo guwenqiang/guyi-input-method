@@ -11,9 +11,16 @@ registry='/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSer
 as_user() { /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" "$@"; }
 as_user "$registry" -f "$backend" || echo 'Input method registration will be retried when opened.'
 as_user "$registry" -f "$launcher" || echo 'Application registration will be retried when opened.'
-as_user "$backend/Contents/MacOS/guyi" --register-input-source || echo 'Add GuYi in System Settings > Keyboard > Text Input.'
+as_user "$backend/Contents/MacOS/guyi" --register-input-source || echo 'If GuYi is absent from the input menu, add it in System Settings > Keyboard > Text Input.'
 # Publish the new IMK endpoint in the current login session after the old backend
 # was stopped. Do not disable/re-enable sources, overwrite input preferences, or
 # launch a short-lived helper that requests input-method consent during upgrades.
+while read -r process_id; do
+    test -n "$process_id" || continue
+    executable=$(/bin/ps -p "$process_id" -o comm=)
+    if test "$executable" = "$backend/Contents/MacOS/guyi"; then
+        /bin/kill -TERM "$process_id" || true
+    fi
+done < <(/usr/bin/pgrep -x guyi || true)
 as_user /usr/bin/open -g "$backend" || echo 'Open GuYi Input Method from Applications to start its background service.'
-echo 'GuYi files installed. Open GuYi Input Method from Applications, then add it in Keyboard settings.'
+echo 'GuYi files installed. Choose GuYi from the input menu; use Keyboard settings only if it is absent.'

@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private var sentenceMenuItem: NSMenuItem?
+    private var selectionPauseMenuItem: NSMenuItem?
+    private var capsDiagnosticMonitor: Any?
 
     func prepareInputServer() -> Bool {
         if CommandLine.arguments.contains("--self-test") { return true }
@@ -58,13 +60,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             name: NSWorkspace.didActivateApplicationNotification, object: nil)
         HotwordStore.shared.configure(enabled: preferences.settings.hotwordsEnabled != false)
         SelectionTranslationService.shared.start(preferences: preferences)
-        TerminalCapsLockSwitch.shared.prepareSwitch = { [weak self] in self?.currentController?.prepareExternalSourceSwitch() }
-        TerminalCapsLockSwitch.shared.allowsSwitch = {
+        SelectionHotKey.shared.configure(preferences: preferences)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshSelectionHotKey), name: .guyiSettingsChanged, object: nil)
+        if InputSourceDiagnostics.enabled {
+            capsDiagnosticMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
+                guard event.keyCode == 57 else { return }
+                Task { @MainActor in
+                    InputSourceDiagnostics.record("caps-global", eventHasLock: event.modifierFlags.contains(.capsLock))
+                }
+            }
+            InputSourceDiagnostics.record("diagnostics-started")
+        }
+        CapsLanguageSwitch.shared.toggleLanguage = { [weak self] in self?.currentController?.toggleCapsLanguage() ?? false }
+        CapsLanguageSwitch.shared.allowsSwitch = {
             !TranslationPrivacy.protectedContext() && !InputSafety.bypassInputMethod(bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
         }
-        TerminalCapsLockSwitch.shared.start()
-        ScreenshotService.shared.configure(enabled: false,
-            key: preferences.settings.screenshotKey ?? 21, modifiers: preferences.settings.screenshotModifiers ?? 4352)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.image = Bundle.main.image(forResource: "input-badge")
         statusItem?.button?.image?.isTemplate = false
@@ -82,8 +92,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sentence.target = self
         sentenceMenuItem = sentence
         menu.addItem(sentence)
+        let selectionPause = NSMenuItem(title: Localizer.text("暂停划词与复制翻译"), action: #selector(toggleSelectionTranslation), keyEquivalent: "")
+        selectionPause.target = self
+        selectionPauseMenuItem = selectionPause
+        menu.addItem(selectionPause)
         NotificationCenter.default.addObserver(self, selector: #selector(updateSentenceMenu), name: .guyiSentenceModeChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateSentenceMenu), name: .guyiSettingsChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(updateSentenceMenu), name: .guyiSelectionPauseChanged, object: nil)
         updateSentenceMenu()
         statusItem?.menu = menu
         if CommandLine.arguments.contains("--settings") { showSettings() }
@@ -94,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func showSettings() {
         if settingsWindow == nil {
-            let window = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 610), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            let window = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 510), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             window.title = Brand.settings
             window.isReleasedWhenClosed = false
             window.delegate = self
@@ -112,7 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
     func windowWillClose(_ notification: Notification) {
-        if notification.object as? NSWindow === settingsWindow { NSApp.setActivationPolicy(.accessory) }
+        if notification.object as? NSWindow === settingsWindow {
+            settingsWindow = nil
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
     @objc private func interfaceLanguageChanged() {
         settingsWindow?.title = Brand.settings
@@ -124,9 +142,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateSentenceMenu()
     }
     @objc private func toggleSentenceMode() { preferences.toggleSentenceMode() }
+    @objc private func toggleSelectionTranslation() { preferences.toggleSelectionTranslation() }
+    @objc private func refreshSelectionHotKey() { SelectionHotKey.shared.configure(preferences: preferences) }
     @objc private func updateSentenceMenu() {
         sentenceMenuItem?.title = Localizer.text("整句翻译模式")
         sentenceMenuItem?.state = preferences.settings.sentenceComposition == true ? .on : .off
+        selectionPauseMenuItem?.title = Localizer.text("暂停划词与复制翻译")
+        selectionPauseMenuItem?.state = preferences.selectionTranslationPaused ? .on : .off
     }
     @objc private func showHelp() {
         let language = InterfaceLanguage.shared.code
@@ -135,20 +157,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSWorkspace.shared.open(url)
         }
     }
-    @objc private func captureScreen() { ScreenshotService.shared.capture() }
-    func prepareForScreenshot() {
-        SelectionTranslationService.shared.close()
-        settingsWindow?.orderOut(nil)
-        currentController?.hideCandidatePanel()
-    }
     @objc private func inputSourceChanged() {
-        TerminalCapsLockSwitch.shared.sourceChanged()
+        InputSourceDiagnostics.record("source-notification")
         guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
               let pointer = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return }
         let identifier = Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
-        if !identifier.hasPrefix("app.guyi.inputmethod.Guyi") { currentController?.hideCandidatePanel() }
+        if !identifier.hasPrefix("app.guyi.inputmethod.Guyi") {
+            currentController?.hideCandidatePanel()
+            InputLanguageIndicator.shared.hide()
+        }
     }
-    @objc private func frontApplicationChanged() { currentController?.hideIfClientInactive(); ScreenshotService.shared.hostDidChange(); TerminalCapsLockSwitch.shared.refreshHardwareAccess() }
+    @objc private func frontApplicationChanged() {
+        InputSourceDiagnostics.record("front-app")
+        SelectionTranslationService.shared.frontApplicationChanged()
+        currentController?.hideIfClientInactive()
+    }
     private var previewPanel: CandidatePanel?
     private func preview() {
         let model = CandidateModel()
@@ -200,11 +223,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         success = success && promoted
         print("Rime user frequency promotion: \(promoted ? "PASS" : "FAIL")")
         engine.clear()
-        engine.learning(false)
+        _ = engine.configure(language: .zh, learning: false)
         for scalar in "nihao".unicodeScalars { _ = engine.key(Int32(scalar.value)) }
         let privateMode = engine.state().candidates.first == "你好"
         success = success && privateMode
         print("Rime learning-off isolation: \(privateMode ? "PASS" : "FAIL")")
+        engine.clear()
+        let japaneseSchema = engine.configure(language: .ja, learning: false)
+        var japaneseCommitted = ""
+        for scalar in "nihongo".unicodeScalars {
+            _ = engine.key(Int32(scalar.value))
+            japaneseCommitted += engine.commit()
+        }
+        let japanese = engine.state()
+        let kana = japaneseCommitted + japanese.preview + japanese.candidates.joined()
+        let japaneseReady = japaneseSchema && kana.contains("に") && kana.contains("ご")
+        success = success && japaneseReady
+        print("Rime Japanese romaji-to-kana: \(japaneseReady ? "PASS" : "FAIL") · schema=\(japaneseSchema) committed=\(japaneseCommitted) preedit=\(japanese.preedit) preview=\(japanese.preview) candidates=\(japanese.candidates.prefix(3))")
+        engine.clear()
+        let japaneseLearning = engine.configure(language: .ja, learning: true)
+        for scalar in "nihongo".unicodeScalars { _ = engine.key(Int32(scalar.value)) }
+        let learnedKana = engine.state().preview
+        let learningReady = japaneseLearning && learnedKana == "にほんご"
+        success = success && learningReady
+        print("Rime Japanese standard schema: \(learningReady ? "PASS" : "FAIL")")
         fflush(stdout)
         exit(success ? 0 : 1)
     }

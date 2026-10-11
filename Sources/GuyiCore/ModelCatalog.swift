@@ -3,7 +3,7 @@ import Foundation
 public enum ModelCatalog {
     public static func fetch(settings: TranslationSettings, apiKey: String) async throws -> [String] {
         guard !apiKey.isEmpty else { throw TranslationError.missingKey }
-        let url = try settings.validatedURL().deletingLastPathComponent().appendingPathComponent("models")
+        let url = try settings.validatedBaseURL().appendingPathComponent("models")
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         if settings.effectiveAPIProtocol == .anthropic {
