@@ -1,4 +1,4 @@
-# GuYi 版本更新 / Release Notes / Catatan Rilis
+# GuYi 版本更新 / Release Notes / Catatan Rilis / 変更履歴 / 변경 사항
 
 ## 0.2.73
 

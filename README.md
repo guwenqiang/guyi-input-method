@@ -68,7 +68,7 @@ OpenAI 协议**不限于 OpenAI 公司**：任何实现相应接口和认证的�
 
 完整步骤和排障：[使用说明](docs/使用说明.md) · [中文帮助](docs/help/zh-Hans.md) · [English guide](docs/help/en.md) · [Panduan Indonesia](docs/help/id.md) · [日本語](docs/help/ja.md) · [한국어](docs/help/ko.md)。应用内提供同样的离线帮助。
 
-版本变化见三语[更新说明](CHANGELOG.md)。
+版本变化见[五语更新说明](CHANGELOG.md)。
 
 ## 源码与许可
 
